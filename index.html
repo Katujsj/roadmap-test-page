@@ -28,12 +28,13 @@
   .rm-laneswrap { overflow:hidden; }
   .rm-canvaswrap { overflow-x:auto; overflow-y:hidden; }
   .rm-lanes { border-right:1px solid #eee; position:relative; } /* DnD 가이드라인을 위해 relative */
-  .rm-lane { display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid #f1f1f1; background:#fff; box-sizing:border-box; }
+  .rm-lane { display:flex; align-items:center; gap:6px; padding:8px 10px; border-bottom:1px solid #f1f1f1; background:#fff; box-sizing:border-box; }
   .rm-lane input { border:1px solid #e5e7eb; border-radius:8px; padding:6px 8px; flex:1 1 auto; width:auto; min-width:0; }
   .rm-lane .rm-color { width:18px; height:18px; border-radius:6px; border:1px solid #e5e7eb; cursor:pointer; }
   .rm-lane .rm-treepad { width:0; height:0; }
+  .rm-milestone-toggle { display:flex; align-items:center; gap:4px; font-size:11px; color:#4b5563; white-space:nowrap; margin-right:4px; flex-shrink:0; }
+  .rm-milestone-toggle input { margin:0; }
   .rm-expander { width:18px; height:18px; border:1px solid #e5e7eb; border-radius:6px; background:#fff; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:12px; line-height:1; }
-  .rm-expander--placeholder { border-color:transparent; background:transparent; cursor:default; }
 
   /* Drag handle & insert guide */
   .rm-drag { width:14px; height:18px; display:flex; align-items:center; justify-content:center; cursor:grab; color:#9ca3af; user-select:none; }
@@ -55,6 +56,11 @@
   .rm-handle { position:absolute; top:0; width:8px; height:100%; cursor:ew-resize; }
   .rm-handle.left { left:-4px; }
   .rm-handle.right { right:-4px; }
+  .rm-task--milestone { background:transparent; box-shadow:none; transform:translateX(-50%); }
+  .rm-task--milestone .rm-milestone-shape { position:absolute; top:50%; left:50%; width:14px; height:14px; transform:translate(-50%,-50%) rotate(45deg); border-radius:4px; box-shadow:0 1px 4px rgba(0,0,0,0.1); }
+  .rm-task--milestone .rm-milestone-label { position:absolute; top:50%; left:calc(50% + 14px); transform:translateY(-50%); display:flex; align-items:center; gap:6px; font-size:12px; color:#111; white-space:nowrap; pointer-events:auto; }
+  .rm-task--milestone .rm-milestone-title { font-weight:500; }
+  .rm-task--milestone .rm-milestone-date { font-size:11px; color:#4b5563; }
 
   /* Weekend in canvas */
   .rm-weekends-layer { position:absolute; inset:0; z-index:0; pointer-events:none; }
@@ -161,8 +167,8 @@
     start: fmt(addDays(ceilToMonday(today()), -7)),
     end:   fmt(addDays(ceilToMonday(today()), 28)),
     lanes: [
-      { id: makeId(), name: 'Lane A', color:'#c7d2fe', parentId: null, collapsed:false },
-      { id: makeId(), name: 'Lane B', color:'#bbf7d0', parentId: null, collapsed:false }
+      { id: makeId(), name: 'Lane A', color:'#c7d2fe', parentId: null, collapsed:false, milestone:false },
+      { id: makeId(), name: 'Lane B', color:'#bbf7d0', parentId: null, collapsed:false, milestone:false }
     ],
     tasks: []
   };
@@ -689,9 +695,14 @@
 
   /* ========= Layout (Inclusive) ========= */
   var TRACK = { pad:8, gap:6, height:28 };
-  function layoutLane(laneId, laneTasks){
+  var MILESTONE = { size:18 };
+  function layoutLane(lane, laneTasks){
+    var isMilestone = !!(lane && lane.milestone);
     var tasks = (laneTasks||[])
-      .map(function(t){ return { id:t.id, _s:+new Date(t.start), _e:+addDays(new Date(t.end),1) }; })
+      .map(function(t){
+        var startRef = isMilestone ? new Date(t.end) : new Date(t.start);
+        return { id:t.id, _s:+startRef, _e:+addDays(new Date(t.end),1) };
+      })
       .sort(function(a,b){ return (a._s - b._s) || (a._e - b._e); });
 
     var tracks = [];
@@ -834,7 +845,8 @@
     flattened.forEach(function(item){
       var lane=item.lane, depth=item.depth, hasChildren=item.hasChildren;
       var laneTasks = tasksByLane[lane.id] || [];
-      var layout = layoutLane(lane.id, laneTasks);
+      var layout = layoutLane(lane, laneTasks);
+      var isMilestoneLane = !!lane.milestone;
       totalCanvasH += layout.rowHeight;
 
       var L = document.createElement('div');
@@ -842,10 +854,11 @@
       L.setAttribute('data-lane', lane.id);
       L.style.height = layout.rowHeight+'px';
       L.innerHTML = ''
+        + '<label class="rm-milestone-toggle"><input type="checkbox" data-lane-milestone="'+lane.id+'"'+(lane.milestone?' checked':'')+'>M.S</label>'
         + '<span class="rm-treepad" style="margin-left:'+(depth*16)+'px"></span>'
         + (hasChildren
            ? '<button class="rm-expander" data-expander="'+lane.id+'" title="'+(lane.collapsed?'펼치기 (++)':'접기 (--)')+'" aria-label="'+(lane.collapsed?'펼치기':'접기')+'">'+(lane.collapsed?'▸':'▾')+'</button>'
-           : '<span class="rm-expander rm-expander--placeholder" aria-hidden="true"></span>')
+           : '')
         + '<span class="rm-drag" title="드래그로 순서 변경" aria-label="드래그로 순서 변경" role="button">↕</span>'
         + '<div class="rm-color" style="background:'+lane.color+'" role="button" aria-label="색상 선택"></div>'
         + '<input value="'+escapeHtml(lane.name)+'" data-lane-name="'+lane.id+'" aria-label="그룹 이름" />'
@@ -868,25 +881,44 @@
       });
 
       laneTasks.forEach(function(task){
-        var left = tl.dateToX(task.start);
-        var rightInc = tl.dateToX(fmt(addDays(new Date(task.end),1))); // end+1
-        var dataWidth = Math.max(0, rightInc-left);
-        var visWidth  = Math.max(16, dataWidth);
         var trackIndex = (layout.pos[task.id]||0);
         var top = TRACK.pad + trackIndex*(TRACK.height + TRACK.gap);
-
+        var isMilestoneTask = isMilestoneLane;
+        var color = task.color || lane.color || '#e5e7eb';
         var t = document.createElement('div');
-        t.className = 'rm-task' + ((selectedTaskId===task.id)?' sel':'');
-        t.style.left = left+'px';
-        t.style.width = visWidth+'px';
-        t.style.top = top+'px';
-        t.style.height = TRACK.height+'px';
-        t.style.background = (task.color || lane.color || '#e5e7eb');
+        var selCls = (selectedTaskId===task.id)?' sel':'';
         t.setAttribute('data-id', task.id);
         t.setAttribute('role','button');
         t.setAttribute('tabindex','0');
         t.setAttribute('aria-label', escapeHtml(task.title)+' '+task.start+' ~ '+task.end);
-        t.innerHTML = '<div class="rm-handle left" data-side="left"></div><div class="rm-label" title="'+escapeHtml(task.title)+'">'+escapeHtml(task.title)+'</div><div class="rm-handle right" data-side="right"></div>';
+
+        if (isMilestoneTask){
+          var endLeft = tl.dateToX(task.end);
+          t.className = 'rm-task rm-task--milestone' + selCls;
+          t.style.left = endLeft+'px';
+          t.style.width = MILESTONE.size+'px';
+          t.style.top = top+'px';
+          t.style.height = TRACK.height+'px';
+          t.setAttribute('data-milestone','1');
+          t.innerHTML = ''
+            + '<div class="rm-milestone-shape" style="background:'+color+'"></div>'
+            + '<div class="rm-milestone-label" title="'+escapeHtml(task.title)+'">'
+            +   '<span class="rm-milestone-title">'+escapeHtml(task.title)+'</span>'
+            +   '<span class="rm-milestone-date">'+task.end+'</span>'
+            + '</div>';
+        } else {
+          var left = tl.dateToX(task.start);
+          var rightInc = tl.dateToX(fmt(addDays(new Date(task.end),1))); // end+1
+          var dataWidth = Math.max(0, rightInc-left);
+          var visWidth  = Math.max(16, dataWidth);
+          t.className = 'rm-task' + selCls;
+          t.style.left = left+'px';
+          t.style.width = visWidth+'px';
+          t.style.top = top+'px';
+          t.style.height = TRACK.height+'px';
+          t.style.background = color;
+          t.innerHTML = '<div class="rm-handle left" data-side="left"></div><div class="rm-label" title="'+escapeHtml(task.title)+'">'+escapeHtml(task.title)+'</div><div class="rm-handle right" data-side="right"></div>';
+        }
 
         // Tooltip is handled via delegated event listeners on the canvas
 
@@ -1094,6 +1126,15 @@
     var lane = state.lanes.find(function(l){return l.id===id;});
     if (lane){ lane.name = e.target.value; markDirty('Autosaved'); }
   });
+  $.lanes.addEventListener('change', function(e){
+    var id = e.target.getAttribute('data-lane-milestone'); if (!id) return;
+    var lane = state.lanes.find(function(l){return l.id===id;}); if (!lane) return;
+    pushUndo();
+    lane.milestone = !!e.target.checked;
+    markDirty('Autosaved');
+    render();
+    e.stopPropagation();
+  });
 
   /* ========= Lane DnD (재정렬) ========= */
   (function setupLaneDnD(){
@@ -1190,14 +1231,14 @@
   /* 추가/저장 */
   $.addLane.onclick = function(){
     pushUndo();
-    var lane = { id: makeId(), name: 'Lane ' + (state.lanes.length+1), color: pickColor(), parentId: null, collapsed:false };
+    var lane = { id: makeId(), name: 'Lane ' + (state.lanes.length+1), color: pickColor(), parentId: null, collapsed:false, milestone:false };
     state.lanes.push(lane); selectedLaneId = lane.id; markDirty('Autosaved'); render();
   };
   $.addSubLane.onclick = function(){
     if (!selectedLaneId){ alert('먼저 상위 레인을 선택하세요.'); return; }
     pushUndo();
     var parent = state.lanes.find(function(l){return l.id===selectedLaneId;}); if (!parent){ alert('유효하지 않은 상위 레인입니다.'); return; }
-    var lane = { id: makeId(), name: parent.name + ' / Sub ' + (1 + state.lanes.filter(function(l){return l.parentId===parent.id;}).length), color: pickColor(), parentId: parent.id, collapsed:false };
+    var lane = { id: makeId(), name: parent.name + ' / Sub ' + (1 + state.lanes.filter(function(l){return l.parentId===parent.id;}).length), color: pickColor(), parentId: parent.id, collapsed:false, milestone:false };
     state.lanes.push(lane); selectedLaneId = lane.id; markDirty('Autosaved'); render();
   };
   $.addTask.onclick = function(){
@@ -1242,6 +1283,7 @@
   /* ========= Drag & Resize (Inclusive) ========= */
   function makeDraggable(node, row, tl){
     var mode=null, startX=0, baseLeft=0, baseRight=0;
+    var isMilestoneDrag=false, baseTaskStart=null, baseTaskEnd=null, baseSpanPx=0;
     var id = node.getAttribute('data-id');
     var rowsCache = function(){
       return Array.prototype.map.call($.canvas.querySelectorAll('.rm-row'), function(r){
@@ -1256,8 +1298,20 @@
       startX = e.clientX;
 
       var t = state.tasks.find(function(t){return t.id===id;});
-      baseLeft  = tl.dateToX(t.start);
-      baseRight = tl.dateToX(fmt(addDays(new Date(t.end),1)));
+      var lane = t ? state.lanes.find(function(l){ return l.id===t.laneId; }) : null;
+      isMilestoneDrag = !!(lane && lane.milestone);
+      baseTaskStart = t ? t.start : null;
+      baseTaskEnd = t ? t.end : null;
+      if (isMilestoneDrag && t){
+        baseLeft  = tl.dateToX(t.end);
+        baseRight = baseLeft + (MILESTONE && MILESTONE.size ? MILESTONE.size : 18);
+      } else if (t){
+        baseLeft  = tl.dateToX(t.start);
+        baseRight = tl.dateToX(fmt(addDays(new Date(t.end),1)));
+      } else {
+        baseLeft = baseRight = 0;
+      }
+      baseSpanPx = baseRight - baseLeft;
 
       hideTip(); selectTaskNoRender(id); e.preventDefault(); dragActive = true;
 
@@ -1296,18 +1350,31 @@
             if (newRight < baseLeft) newRight = baseLeft;
           }
         }
+        if (isMilestoneDrag && mode==='move'){
+          newRight = newLeft + baseSpanPx;
+        }
+        var widthPx = isMilestoneDrag ? Math.max(MILESTONE.size, Math.max(0, baseSpanPx)) : Math.max(16, newRight - newLeft);
         node.style.left  = newLeft + 'px';
-        node.style.width = Math.max(16, newRight - newLeft) + 'px';
-        node.__left = newLeft; node.__right = newRight;
+        node.style.width = widthPx + 'px';
+        node.__left = newLeft;
+        node.__right = isMilestoneDrag ? (newLeft + baseSpanPx) : newRight;
 
-        // Live tooltip of new date range
-        var newStart = tl.xToDate(newLeft);
-        var spanDays = (mode==='move')
-          ? Math.max(1, Math.round((baseRight - baseLeft)/tl.pxPerDay))
-          : Math.max(1, Math.round((newRight - newLeft)/tl.pxPerDay));
-        var newEnd = fmt(addDays(new Date(newStart), spanDays - 1));
-        var tip = (t ? t.title : 'Task') + ' : ' + newStart + ' ~ ' + newEnd;
-        showTip(tip, ev.clientX, ev.clientY);
+        if (isMilestoneDrag){
+          var newEndStr = tl.xToDate(newLeft);
+          var deltaDays = (baseTaskEnd!=null) ? dateSpanDays(baseTaskEnd, newEndStr) : 0;
+          var shiftedStart = (baseTaskStart!=null) ? fmt(addDays(new Date(baseTaskStart), deltaDays)) : newEndStr;
+          var tipMs = (t ? t.title : 'Task') + ' : ' + shiftedStart + ' ~ ' + newEndStr;
+          showTip(tipMs, ev.clientX, ev.clientY);
+        } else {
+          // Live tooltip of new date range
+          var newStart = tl.xToDate(newLeft);
+          var spanDays = (mode==='move')
+            ? Math.max(1, Math.round((baseRight - baseLeft)/tl.pxPerDay))
+            : Math.max(1, Math.round((newRight - newLeft)/tl.pxPerDay));
+          var newEnd = fmt(addDays(new Date(newStart), spanDays - 1));
+          var tip = (t ? t.title : 'Task') + ' : ' + newStart + ' ~ ' + newEnd;
+          showTip(tip, ev.clientX, ev.clientY);
+        }
       }
 
       function onUp(ev){
@@ -1316,13 +1383,19 @@
         if (t){
           var newLeft  = (node.__left!=null)? node.__left : parseInt(node.style.left,10);
           var newRight = (node.__right!=null)? node.__right: (newLeft + parseInt(node.style.width,10));
-
-          var start = tl.xToDate(newLeft);
-          var spanDays = (mode==='move')
-            ? Math.max(1, Math.round((baseRight - baseLeft)/tl.pxPerDay))
-            : Math.max(1, Math.round((newRight - newLeft)/tl.pxPerDay));
-          var end   = fmt(addDays(new Date(start), spanDays - 1));
-          t.start = start; t.end = end;
+          if (isMilestoneDrag){
+            var newEndStr = tl.xToDate(newLeft);
+            var shiftDays = (baseTaskEnd!=null) ? dateSpanDays(baseTaskEnd, newEndStr) : 0;
+            if (baseTaskStart!=null){ t.start = fmt(addDays(new Date(baseTaskStart), shiftDays)); }
+            t.end = newEndStr;
+          } else {
+            var start = tl.xToDate(newLeft);
+            var spanDays = (mode==='move')
+              ? Math.max(1, Math.round((baseRight - baseLeft)/tl.pxPerDay))
+              : Math.max(1, Math.round((newRight - newLeft)/tl.pxPerDay));
+            var end   = fmt(addDays(new Date(start), spanDays - 1));
+            t.start = start; t.end = end;
+          }
 
           var y = ev.clientY;
           for (var i=0;i<rcList.length;i++){
@@ -1356,8 +1429,20 @@
       startX = t0.clientX;
 
       var t = state.tasks.find(function(tt){return tt.id===id;});
-      baseLeft  = tl.dateToX(t.start);
-      baseRight = tl.dateToX(fmt(addDays(new Date(t.end),1)));
+      var lane = t ? state.lanes.find(function(l){ return l.id===t.laneId; }) : null;
+      isMilestoneDrag = !!(lane && lane.milestone);
+      baseTaskStart = t ? t.start : null;
+      baseTaskEnd = t ? t.end : null;
+      if (isMilestoneDrag && t){
+        baseLeft  = tl.dateToX(t.end);
+        baseRight = baseLeft + (MILESTONE && MILESTONE.size ? MILESTONE.size : 18);
+      } else if (t){
+        baseLeft  = tl.dateToX(t.start);
+        baseRight = tl.dateToX(fmt(addDays(new Date(t.end),1)));
+      } else {
+        baseLeft = baseRight = 0;
+      }
+      baseSpanPx = baseRight - baseLeft;
 
       hideTip(); selectTaskNoRender(id); e.preventDefault(); dragActive = true;
       pushUndo();
@@ -1396,17 +1481,30 @@
             if (newRight < baseLeft) newRight = baseLeft;
           }
         }
+        if (isMilestoneDrag && mode==='move'){
+          newRight = newLeft + baseSpanPx;
+        }
+        var widthPx = isMilestoneDrag ? Math.max(MILESTONE.size, Math.max(0, baseSpanPx)) : Math.max(16, newRight - newLeft);
         node.style.left  = newLeft + 'px';
-        node.style.width = Math.max(16, newRight - newLeft) + 'px';
-        node.__left = newLeft; node.__right = newRight;
+        node.style.width = widthPx + 'px';
+        node.__left = newLeft;
+        node.__right = isMilestoneDrag ? (newLeft + baseSpanPx) : newRight;
         // Live tooltip for touch
-        var newStart = tl.xToDate(newLeft);
-        var spanDays = (mode==='move')
-          ? Math.max(1, Math.round((baseRight - baseLeft)/tl.pxPerDay))
-          : Math.max(1, Math.round((newRight - newLeft)/tl.pxPerDay));
-        var newEnd = fmt(addDays(new Date(newStart), spanDays - 1));
-        var tip = (t ? t.title : 'Task') + ' : ' + newStart + ' ~ ' + newEnd;
-        showTip(tip, ev.touches[0].clientX, ev.touches[0].clientY);
+        if (isMilestoneDrag){
+          var newEndStr = tl.xToDate(newLeft);
+          var deltaDays = (baseTaskEnd!=null) ? dateSpanDays(baseTaskEnd, newEndStr) : 0;
+          var shiftedStart = (baseTaskStart!=null) ? fmt(addDays(new Date(baseTaskStart), deltaDays)) : newEndStr;
+          var tipMs = (t ? t.title : 'Task') + ' : ' + shiftedStart + ' ~ ' + newEndStr;
+          showTip(tipMs, ev.touches[0].clientX, ev.touches[0].clientY);
+        } else {
+          var newStart = tl.xToDate(newLeft);
+          var spanDays = (mode==='move')
+            ? Math.max(1, Math.round((baseRight - baseLeft)/tl.pxPerDay))
+            : Math.max(1, Math.round((newRight - newLeft)/tl.pxPerDay));
+          var newEnd = fmt(addDays(new Date(newStart), spanDays - 1));
+          var tip = (t ? t.title : 'Task') + ' : ' + newStart + ' ~ ' + newEnd;
+          showTip(tip, ev.touches[0].clientX, ev.touches[0].clientY);
+        }
         ev.preventDefault();
       }
 
@@ -1417,10 +1515,17 @@
         if (tt){
           var newLeft  = (node.__left!=null)? node.__left : parseInt(node.style.left,10);
           var newRight = (node.__right!=null)? node.__right: (newLeft + parseInt(node.style.width,10));
-          var start = tl.xToDate(newLeft);
-          var spanDays = Math.max(1, Math.round((newRight - newLeft)/tl.pxPerDay));
-          var end   = fmt(addDays(new Date(start), spanDays - 1));
-          tt.start = start; tt.end = end;
+          if (isMilestoneDrag){
+            var newEndStr = tl.xToDate(newLeft);
+            var shiftDays = (baseTaskEnd!=null) ? dateSpanDays(baseTaskEnd, newEndStr) : 0;
+            if (baseTaskStart!=null){ tt.start = fmt(addDays(new Date(baseTaskStart), shiftDays)); }
+            tt.end = newEndStr;
+          } else {
+            var start = tl.xToDate(newLeft);
+            var spanDays = Math.max(1, Math.round((newRight - newLeft)/tl.pxPerDay));
+            var end   = fmt(addDays(new Date(start), spanDays - 1));
+            tt.start = start; tt.end = end;
+          }
           var y = cy;
           for (var i=0;i<rcList.length;i++){
             var r = rcList[i];
@@ -1553,12 +1658,29 @@
         pushUndo(); state.tasks = state.tasks.filter(function(x){return x.id!==selectedTaskId;});
         selectedTaskId = null; markDirty('Autosaved'); render();
       }
-      if ((e.ctrlKey||e.metaKey) && (e.key==='d' || e.key==='D') && selectedTaskId && !isTypingContext()){
-        e.preventDefault(); pushUndo();
-        var t0 = state.tasks.find(function(x){return x.id===selectedTaskId;}); if (!t0) return;
-        var step = (state.scale==='year')?365: (state.scale==='quarter')?90: (state.scale==='month')?30: (state.scale==='week')?7:1;
-        var t1 = { id: makeId(), laneId:t0.laneId, title: t0.title+' (copy)', start: fmt(addDays(new Date(t0.start), step)), end: fmt(addDays(new Date(t0.end), step)), color: (t0.color||null) };
-        state.tasks.push(t1); ensureRangeCovers(t1.start, t1.end); selectedTaskId=t1.id; markDirty('Autosaved'); render();
+      if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='c' && selectedTaskId && !isTypingContext()){
+        e.preventDefault();
+        var cTask = state.tasks.find(function(x){return x.id===selectedTaskId;});
+        if (cTask){ window.__rm_clipboard_task = JSON.parse(JSON.stringify(cTask)); }
+      }
+      if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='v' && selectedLaneId && !isTypingContext()){
+        var clip = window.__rm_clipboard_task;
+        if (clip){
+          e.preventDefault(); pushUndo();
+          var newTask = {
+            id: makeId(),
+            laneId: selectedLaneId,
+            title: clip.title,
+            start: clip.start,
+            end: clip.end,
+            color: clip.color || null
+          };
+          state.tasks.push(newTask);
+          ensureRangeCovers(newTask.start, newTask.end);
+          selectedTaskId = newTask.id;
+          markDirty('Autosaved');
+          render();
+        }
       }
       if (!isTypingContext() && selectedLaneId && (e.key==='-' || e.key==='+')){
         var seq = feedSeq(e.key);
@@ -1587,6 +1709,7 @@
       state.lanes.forEach(function(l){
         if (l.parentId === undefined) l.parentId = null;
         if (l.collapsed === undefined) l.collapsed = false;
+        if (l.milestone === undefined) l.milestone = false;
       });
 
       if (state.scale==='week'){
