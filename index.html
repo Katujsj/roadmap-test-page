@@ -24,8 +24,12 @@
   .rm-header .rm-scale { position:relative; border-left:1px solid #eee; overflow:hidden; }
 
   /* Grid: lanes 고정, canvas만 가로 스크롤 */
-  .rm-grid { display:grid; grid-template-columns:var(--laneColWidth) 1fr; max-height:560px; overflow-y:auto; overflow-x:hidden; }
-  .rm-laneswrap { overflow:hidden; }
+  .rm-grid { display:grid; grid-template-columns:var(--laneColWidth) 6px 1fr; max-height:560px; overflow-y:auto; overflow-x:hidden; }
+  .rm-laneswrap { overflow:hidden; grid-column:1; }
+  .rm-resizer { position:relative; width:6px; cursor:col-resize; grid-column:2; }
+  .rm-canvaswrap { grid-column:3; }
+  .rm-resizer::after { content:''; position:absolute; top:0; bottom:0; left:50%; width:2px; transform:translateX(-50%); border-radius:1px; background:#e5e7eb; transition:background 0.2s; }
+  .rm-resizer:hover::after, .rm-resizer.dragging::after { background:#6366f1; }
   .rm-canvaswrap { overflow-x:auto; overflow-y:hidden; }
   .rm-lanes { border-right:1px solid #eee; position:relative; } /* DnD 가이드라인을 위해 relative */
   .rm-lane { display:flex; align-items:center; gap:6px; padding:8px 10px; border-bottom:1px solid #f1f1f1; background:#fff; box-sizing:border-box; }
@@ -85,6 +89,12 @@
 
   /* Tooltip */
   .rm-tip { position:fixed; padding:8px 10px; border:1px solid #e5e7eb; background:#fff; border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.08); font-size:12px; color:#111; pointer-events:none; z-index:2147480000; white-space:nowrap; }
+  .rm-context-menu { position:fixed; z-index:2147481000; min-width:160px; background:#fff; border:1px solid #e5e7eb; border-radius:10px; box-shadow:0 12px 32px rgba(15,23,42,0.12); padding:4px 0; }
+  .rm-context-menu button { width:100%; padding:8px 14px; border:none; background:transparent; text-align:left; font-size:12px; color:#111; cursor:pointer; }
+  .rm-context-menu button:hover { background:#f3f4f6; }
+  .rm-context-menu button:disabled { color:#9ca3af; cursor:default; background:transparent; }
+  .rm-context-sep { margin:4px 0; border-top:1px solid #e5e7eb; }
+  .rm-resize-guide { position:fixed; width:2px; background:#6366f1; top:0; bottom:0; pointer-events:none; z-index:2147481500; border-radius:1px; }
 
   /* Modal */
   .rm-backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.32); display:flex; align-items:center; justify-content:center; z-index:2147483000; }
@@ -170,13 +180,17 @@
       { id: makeId(), name: 'Lane A', color:'#c7d2fe', parentId: null, collapsed:false, milestone:false },
       { id: makeId(), name: 'Lane B', color:'#bbf7d0', parentId: null, collapsed:false, milestone:false }
     ],
-    tasks: []
+    tasks: [],
+    laneWidth: 220
   };
 
   var state = JSON.parse(JSON.stringify(DEFAULT));
   var selectedLaneId = null;
   var selectedTaskId = null;
   var modalOpen = false;
+  var laneResizeInfo = null;
+  var LANE_MIN_WIDTH = 160;
+  var LANE_MAX_WIDTH = 720;
 
   var undoStack = [];
   var redoStack = [];
@@ -541,8 +555,9 @@
   + '      <div class="rm-today-head" id="rm-today-head"></div>'
   + '    </div>'
   + '  </div>'
-  + '  <div class="rm-grid">'
+  + '  <div class="rm-grid" id="rm-grid">'
   + '    <div class="rm-laneswrap"><div class="rm-lanes" id="rm-lanes"></div></div>'
+  + '    <div class="rm-resizer" id="rm-lane-resizer" role="separator" aria-orientation="vertical" aria-label="레인 열 폭 조절"></div>'
   + '    <div class="rm-canvaswrap" id="rm-canvaswrap"><div class="rm-canvas" id="rm-canvas"></div></div>'
   + '  </div>'
   + '</div>'
@@ -567,7 +582,9 @@
     ticks: byId('rm-ticks'),
     todayHead: byId('rm-today-head'),
     container: byId('rm-container'),
-    weekendHead: byId('rm-weekend-head')
+    weekendHead: byId('rm-weekend-head'),
+    resizer: byId('rm-lane-resizer'),
+    grid: byId('rm-grid')
   };
 
   /* ========= Timeline helpers ========= */
@@ -799,13 +816,29 @@
       if (!placed){ tracks.push(ent._e); pos[ent.id]=tracks.length-1; }
     }
 
-    var rows = tracks.length;
-    if (rows === 0) rows = milestoneOnly.length ? 1 : 1;
-    var rowHeight = TRACK.pad*2 + rows*TRACK.height + (rows-1)*TRACK.gap;
-    if (rowHeight < TRACK.pad*2 + TRACK.height) rowHeight = TRACK.pad*2 + TRACK.height;
+    var rowsNormal = tracks.length;
+    var hasMilestone = milestoneOnly.length > 0;
+    var totalRows;
+    if (rowsNormal === 0){
+      totalRows = hasMilestone ? 1 : 1;
+    } else {
+      totalRows = hasMilestone ? rowsNormal + 1 : rowsNormal;
+    }
+    if (totalRows <= 0) totalRows = 1;
 
-    for (var m=0;m<milestoneOnly.length;m++){ pos[milestoneOnly[m].id] = 0; }
-    return { rows:rows, rowHeight:rowHeight, pos:pos };
+    var rowHeight = TRACK.pad*2 + totalRows*TRACK.height + (totalRows-1)*TRACK.gap;
+
+    var normalBaseRow = hasMilestone ? 1 : 0;
+    for (var n=0; n<normal.length; n++){
+      var nt = normal[n];
+      if (pos[nt.id] === undefined) pos[nt.id] = normalBaseRow;
+      else pos[nt.id] = pos[nt.id] + normalBaseRow;
+    }
+    if (hasMilestone){
+      for (var m=0;m<milestoneOnly.length;m++){ pos[milestoneOnly[m].id] = 0; }
+    }
+
+    return { rows:totalRows, rowHeight:rowHeight, pos:pos };
   }
 
   function positionMilestoneLanes(entries, weekendLayer, tl){
@@ -859,28 +892,22 @@
     var minOffset = 0;
     var maxOffset = 0;
     var spacing = levelGap;
-
-    function candidateAt(idx){
-      if (idx === 0) return 0;
-      var magnitude = Math.floor((idx + 1) / 2);
-      return (idx % 2 === 1) ? magnitude : -magnitude;
-    }
+    var levelCandidates = [0, -1, -2, -3, -4, -5, -6, -7, -8, -9, -10];
 
     for (var d=0; d<data.length; d++){
       var itemData = data[d];
       var level = 0;
-      var idx = 0;
-      while (true){
-        var candidate = candidateAt(idx);
+      for (var idx=0; idx<levelCandidates.length; idx++){
+        var candidate = levelCandidates[idx];
         var limit = levelRight[candidate];
         if (limit == null || itemData.left >= limit){
           level = candidate;
           levelRight[candidate] = itemData.right + 8;
           break;
         }
-        idx++;
-        if (idx > 20){
+        if (idx === levelCandidates.length-1){
           level = candidate;
+          levelRight[candidate] = itemData.right + 8;
           break;
         }
       }
@@ -1033,8 +1060,18 @@
     }
 
     var flattened = flattenLanes();
-    var laneColWidth = computeLaneColWidth(flattened);
+    var autoLaneWidth = computeLaneColWidth(flattened);
+    var manualWidth = (typeof state.laneWidth === 'number' && !isNaN(state.laneWidth)) ? state.laneWidth : null;
+    var laneColWidth = manualWidth != null ? Math.max(autoLaneWidth, manualWidth) : autoLaneWidth;
+    if (laneColWidth < LANE_MIN_WIDTH) laneColWidth = LANE_MIN_WIDTH;
+    var containerCap = laneMaxWidthFromContainer();
+    if (laneColWidth > containerCap) laneColWidth = containerCap;
+    if (laneColWidth > LANE_MAX_WIDTH) laneColWidth = LANE_MAX_WIDTH;
+    if (manualWidth != null && laneColWidth !== manualWidth) state.laneWidth = laneColWidth;
     $.container.style.setProperty('--laneColWidth', laneColWidth + 'px');
+    if ($.resizer){
+      $.resizer.setAttribute('aria-valuenow', String(Math.round(laneColWidth)));
+    }
 
     var totalCanvasH = 0;
     var milestoneLanes = [];
@@ -1069,10 +1106,8 @@
 
       R.addEventListener('click', function(e){
         if (e.target.closest && (e.target.closest('.rm-task') || e.target.closest('.rm-handle'))) return;
-        selectedLaneId = lane.id; selectedTaskId = null;
-        Array.prototype.forEach.call(document.querySelectorAll('.rm-lane.sel,.rm-row.sel,.rm-task.sel'), function(x){ x.classList.remove('sel'); });
-        var leftEl = $.lanes.querySelector('.rm-lane[data-lane="'+lane.id+'"]');
-        if (leftEl) leftEl.classList.add('sel'); R.classList.add('sel');
+        selectLaneNoRender(lane.id);
+        selectTaskNoRender(null);
       });
 
       laneTasks.forEach(function(task){
@@ -1127,11 +1162,8 @@
 
         t.addEventListener('click', function(e){
           e.stopPropagation();
-          selectedLaneId = lane.id;
+          selectLaneNoRender(lane.id);
           selectTaskNoRender(task.id);
-          Array.prototype.forEach.call(document.querySelectorAll('.rm-lane.sel,.rm-row.sel'), function(x){ x.classList.remove('sel'); });
-          var leftEl = $.lanes.querySelector('.rm-lane[data-lane="'+lane.id+'"]');
-          if (leftEl) leftEl.classList.add('sel'); R.classList.add('sel');
         });
 
         makeDraggable(t, R, tl);
@@ -1178,10 +1210,21 @@
   }
 
   function selectTaskNoRender(id){
-    selectedTaskId = id;
+    selectedTaskId = id || null;
     Array.prototype.forEach.call(document.querySelectorAll('.rm-task.sel'), function(x){ x.classList.remove('sel'); });
+    if (!id) return;
     var e = $.canvas.querySelector('.rm-task[data-id="'+id+'"]');
     if (e) e.classList.add('sel');
+  }
+
+  function selectLaneNoRender(id){
+    selectedLaneId = id || null;
+    Array.prototype.forEach.call(document.querySelectorAll('.rm-lane.sel,.rm-row.sel'), function(x){ x.classList.remove('sel'); });
+    if (!id) return;
+    var laneEl = $.lanes.querySelector('.rm-lane[data-lane="'+id+'"]');
+    if (laneEl) laneEl.classList.add('sel');
+    var rowEl = $.canvas.querySelector('.rm-row[data-lane="'+id+'"]');
+    if (rowEl) rowEl.classList.add('sel');
   }
 
   /* ========= Interactions ========= */
@@ -1318,11 +1361,9 @@
       return;
     }
     if (laneEl){
-      selectedLaneId = laneEl.getAttribute('data-lane');
-      selectedTaskId = null;
-      Array.prototype.forEach.call(document.querySelectorAll('.rm-lane.sel,.rm-row.sel,.rm-task.sel'), function(x){ x.classList.remove('sel'); });
-      laneEl.classList.add('sel');
-      var row = $.canvas.querySelector('.rm-row[data-lane="'+selectedLaneId+'"]'); if (row) row.classList.add('sel');
+      var laneId = laneEl.getAttribute('data-lane');
+      selectLaneNoRender(laneId);
+      selectTaskNoRender(null);
     }
   });
   $.lanes.addEventListener('input', function(e){
@@ -1373,6 +1414,7 @@
     }
 
     $.lanes.addEventListener('mousedown', function(e){
+      if (e.button !== 0) return;
       var handle = e.target.closest && e.target.closest('.rm-drag');
       if (!handle) return;
       var laneEl = e.target.closest('.rm-lane');
@@ -1422,31 +1464,333 @@
     });
   })();
 
-  /* 추가/저장 */
-  $.addLane.onclick = function(){
+  function createLane(parentLaneId, options){
+    var parent = null;
+    if (parentLaneId){
+      parent = state.lanes.find(function(l){ return l.id===parentLaneId; });
+      if (!parent) return null;
+    }
     pushUndo();
-    var lane = { id: makeId(), name: 'Lane ' + (state.lanes.length+1), color: pickColor(), parentId: null, collapsed:false, milestone:false };
-    state.lanes.push(lane); selectedLaneId = lane.id; markDirty('Autosaved'); render();
-  };
+    var name;
+    if (options && options.name){ name = options.name; }
+    else if (parent){
+      var count = state.lanes.filter(function(l){ return l.parentId === parent.id; }).length;
+      name = parent.name + ' / Sub ' + (count + 1);
+    } else {
+      name = 'Lane ' + (state.lanes.length + 1);
+    }
+    var lane = {
+      id: makeId(),
+      name: name,
+      color: (options && options.color) || pickColor(),
+      parentId: parent ? parent.id : null,
+      collapsed: false,
+      milestone: false
+    };
+    state.lanes.push(lane);
+    selectedLaneId = lane.id;
+    selectedTaskId = null;
+    markDirty('Autosaved');
+    render();
+    return lane;
+  }
+
+  function createTask(laneId, options){
+    if (!laneId) return null;
+    pushUndo();
+    var start = (options && options.start) || fmt(today());
+    var end = (options && options.end) || start;
+    var title = (options && options.title) || 'New Task';
+    var color = (options && options.color != null) ? options.color : null;
+    var milestone = options && options.milestone ? true : false;
+    var openEditor = options && options.openEditor;
+    var task = {
+      id: makeId(),
+      laneId: laneId,
+      title: title,
+      start: start,
+      end: end,
+      color: color,
+      milestone: milestone
+    };
+    state.tasks.push(task);
+    selectedLaneId = laneId;
+    selectedTaskId = task.id;
+    ensureRangeCovers(task.start, task.end);
+    markDirty('Autosaved');
+    render();
+    if (openEditor){ setTimeout(function(){ openTaskEditor(task.id); }, 0); }
+    return task;
+  }
+
+  function deleteSelectedTask(){
+    if (!selectedTaskId) return false;
+    pushUndo();
+    state.tasks = state.tasks.filter(function(x){ return x.id !== selectedTaskId; });
+    selectTaskNoRender(null);
+    markDirty('Autosaved');
+    render();
+    return true;
+  }
+
+  function copySelectedTask(){
+    if (!selectedTaskId) return false;
+    var cTask = state.tasks.find(function(x){ return x.id === selectedTaskId; });
+    if (!cTask) return false;
+    window.__rm_clipboard_task = JSON.parse(JSON.stringify(cTask));
+    return true;
+  }
+
+  function pasteTaskIntoLane(laneId){
+    if (!laneId) return false;
+    var clip = window.__rm_clipboard_task;
+    if (!clip) return false;
+    pushUndo();
+    var newTask = {
+      id: makeId(),
+      laneId: laneId,
+      title: clip.title,
+      start: clip.start,
+      end: clip.end,
+      color: clip.color || null,
+      milestone: !!clip.milestone
+    };
+    state.tasks.push(newTask);
+    selectedLaneId = laneId;
+    selectedTaskId = newTask.id;
+    ensureRangeCovers(newTask.start, newTask.end);
+    markDirty('Autosaved');
+    render();
+    return true;
+  }
+
+  /* 추가/저장 */
+  $.addLane.onclick = function(){ createLane(null); };
   $.addSubLane.onclick = function(){
     if (!selectedLaneId){ alert('먼저 상위 레인을 선택하세요.'); return; }
-    pushUndo();
     var parent = state.lanes.find(function(l){return l.id===selectedLaneId;}); if (!parent){ alert('유효하지 않은 상위 레인입니다.'); return; }
-    var lane = { id: makeId(), name: parent.name + ' / Sub ' + (1 + state.lanes.filter(function(l){return l.parentId===parent.id;}).length), color: pickColor(), parentId: parent.id, collapsed:false, milestone:false };
-    state.lanes.push(lane); selectedLaneId = lane.id; markDirty('Autosaved'); render();
+    createLane(parent.id);
   };
   $.addTask.onclick = function(){
     if (!selectedLaneId){ alert('먼저 레인을 선택하세요.'); return; }
+    createTask(selectedLaneId, { end: fmt(addDays(today(), 5)), openEditor: true });
+  };
+
+  /* ========= Context Menu ========= */
+  var contextMenuEl = null;
+  var contextMenuState = null;
+
+  function closeContextMenu(){
+    if (contextMenuEl && contextMenuEl.parentNode){ contextMenuEl.parentNode.removeChild(contextMenuEl); }
+    contextMenuEl = null;
+    contextMenuState = null;
+    document.removeEventListener('mousedown', handleMenuOutside, true);
+    document.removeEventListener('scroll', handleMenuScroll, true);
+    document.removeEventListener('keydown', handleMenuKeyDown, true);
+    document.removeEventListener('contextmenu', handleMenuContext, true);
+    window.removeEventListener('blur', handleMenuWindowClose);
+    window.removeEventListener('resize', handleMenuWindowClose);
+  }
+
+  function handleMenuOutside(ev){ if (contextMenuEl && !contextMenuEl.contains(ev.target)) closeContextMenu(); }
+  function handleMenuScroll(){ closeContextMenu(); }
+  function handleMenuKeyDown(ev){ if (ev.key === 'Escape') closeContextMenu(); }
+  function handleMenuContext(ev){ if (contextMenuEl && !contextMenuEl.contains(ev.target)) closeContextMenu(); }
+  function handleMenuWindowClose(){ closeContextMenu(); }
+
+  function openContextMenu(x, y, laneId, taskId){
+    closeContextMenu();
+    contextMenuState = { laneId: laneId || null, taskId: taskId || null };
+    var menu = document.createElement('div');
+    menu.className = 'rm-context-menu';
+    contextMenuEl = menu;
+
+    var hasLane = !!laneId;
+    var hasTask = !!taskId;
+    var hasClipboard = !!window.__rm_clipboard_task;
+    var actions = [
+      { action:'task-add', label:'태스크 추가', enabled:hasLane },
+      { action:'task-edit', label:'태스크 편집', enabled:hasTask },
+      { action:'task-delete', label:'태스크 삭제', enabled:hasTask },
+      { action:'task-copy', label:'태스크 복사', enabled:hasTask },
+      { action:'task-paste', label:'태스크 붙여넣기', enabled:hasLane && hasClipboard },
+      { separator:true },
+      { action:'lane-add', label:'레인 추가', enabled:true }
+    ];
+
+    actions.forEach(function(item){
+      if (item.separator){
+        var sep = document.createElement('div');
+        sep.className = 'rm-context-sep';
+        menu.appendChild(sep);
+        return;
+      }
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = item.label;
+      btn.setAttribute('data-action', item.action);
+      if (!item.enabled) btn.disabled = true;
+      menu.appendChild(btn);
+    });
+
+    menu.addEventListener('click', function(ev){
+      var btn = ev.target.closest && ev.target.closest('button');
+      if (!btn || btn.disabled) return;
+      ev.preventDefault();
+      var action = btn.getAttribute('data-action');
+      var lane = contextMenuState ? contextMenuState.laneId : null;
+      var task = contextMenuState ? contextMenuState.taskId : null;
+      closeContextMenu();
+      if (action === 'task-add' && lane){
+        createTask(lane, { end: fmt(addDays(today(),0)), openEditor: true });
+      } else if (action === 'task-edit' && task){
+        openTaskEditor(task);
+      } else if (action === 'task-delete'){ 
+        deleteSelectedTask();
+      } else if (action === 'task-copy'){ 
+        copySelectedTask();
+      } else if (action === 'task-paste' && lane){
+        pasteTaskIntoLane(lane);
+      } else if (action === 'lane-add'){
+        createLane(null);
+      }
+    });
+
+    document.body.appendChild(menu);
+    menu.style.left = '0px';
+    menu.style.top = '0px';
+    var rect = menu.getBoundingClientRect();
+    var left = Math.min(x, window.innerWidth - rect.width - 8);
+    var top = Math.min(y, window.innerHeight - rect.height - 8);
+    if (left < 8) left = 8;
+    if (top < 8) top = 8;
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+
+    setTimeout(function(){
+      document.addEventListener('mousedown', handleMenuOutside, true);
+      document.addEventListener('scroll', handleMenuScroll, true);
+      document.addEventListener('keydown', handleMenuKeyDown, true);
+      document.addEventListener('contextmenu', handleMenuContext, true);
+      window.addEventListener('blur', handleMenuWindowClose);
+      window.addEventListener('resize', handleMenuWindowClose);
+    }, 0);
+  }
+
+  $.canvas.addEventListener('contextmenu', function(e){
+    if (!e.target) return;
+    var taskEl = e.target.closest && e.target.closest('.rm-task');
+    var rowEl = e.target.closest && e.target.closest('.rm-row');
+    var laneId = rowEl ? rowEl.getAttribute('data-lane') : (selectedLaneId || null);
+    if (taskEl){
+      var taskId = taskEl.getAttribute('data-id');
+      if (laneId) selectLaneNoRender(laneId);
+      if (taskId) selectTaskNoRender(taskId);
+    } else if (laneId){
+      selectLaneNoRender(laneId);
+      selectTaskNoRender(null);
+    }
+    e.preventDefault();
+    openContextMenu(e.clientX, e.clientY, laneId, selectedTaskId);
+  });
+
+  /* ========= Lane Width Resize ========= */
+  function preventSelection(ev){ ev.preventDefault(); }
+  function currentLaneWidth(){
+    var val = window.getComputedStyle($.container).getPropertyValue('--laneColWidth');
+    var num = parseFloat(val);
+    if (isNaN(num)){ num = (typeof state.laneWidth === 'number') ? state.laneWidth : LANE_MIN_WIDTH; }
+    if (!isFinite(num)) num = LANE_MIN_WIDTH;
+    return num;
+  }
+  function laneMaxWidthFromContainer(){
+    var base = LANE_MAX_WIDTH;
+    var gridWidth = $.grid ? $.grid.clientWidth : 0;
+    var containerWidth = gridWidth || $.container.clientWidth || $.container.offsetWidth;
+    if (containerWidth){
+      var allow = containerWidth - 160;
+      if (!isNaN(allow) && allow > 0){ base = Math.min(base, allow); }
+    }
+    if (base < LANE_MIN_WIDTH) base = LANE_MIN_WIDTH;
+    return base;
+  }
+  function updateResizeGuide(width){
+    if (!laneResizeInfo) return;
+    var rect = $.container.getBoundingClientRect();
+    laneResizeInfo.containerTop = rect.top;
+    laneResizeInfo.containerHeight = rect.height;
+    if (laneResizeInfo.guide){
+      laneResizeInfo.guide.style.left = (rect.left + width) + 'px';
+      laneResizeInfo.guide.style.top = rect.top + 'px';
+      laneResizeInfo.guide.style.height = rect.height + 'px';
+    }
+  }
+  function cleanupLaneResize(){
+    document.removeEventListener('mousemove', onLaneResizerMove, true);
+    document.removeEventListener('mouseup', onLaneResizerUp, true);
+    document.removeEventListener('selectstart', preventSelection, true);
+    document.body.style.cursor = '';
+    if ($.resizer) $.resizer.classList.remove('dragging');
+    if (laneResizeInfo && laneResizeInfo.guide && laneResizeInfo.guide.parentNode){ laneResizeInfo.guide.parentNode.removeChild(laneResizeInfo.guide); }
+    laneResizeInfo = null;
+  }
+  function onLaneResizerMove(ev){
+    if (!laneResizeInfo) return;
+    ev.preventDefault();
+    var delta = ev.clientX - laneResizeInfo.startX;
+    var width = laneResizeInfo.startWidth + delta;
+    if (width < laneResizeInfo.min) width = laneResizeInfo.min;
+    if (width > laneResizeInfo.max) width = laneResizeInfo.max;
+    laneResizeInfo.width = width;
+    updateResizeGuide(width);
+  }
+  function onLaneResizerUp(ev){
+    if (!laneResizeInfo) return;
+    ev.preventDefault();
+    var width = laneResizeInfo.width != null ? laneResizeInfo.width : laneResizeInfo.startWidth;
+    cleanupLaneResize();
+    width = Math.round(width);
+    if (width < LANE_MIN_WIDTH) width = LANE_MIN_WIDTH;
+    var maxAllowed = laneMaxWidthFromContainer();
+    if (width > maxAllowed) width = maxAllowed;
+    var prev = (typeof state.laneWidth === 'number' && !isNaN(state.laneWidth)) ? state.laneWidth : null;
+    if (prev !== null && Math.abs(width - prev) < 1) return;
     pushUndo();
-    var s = fmt(today()), e = fmt(addDays(today(), 5));
-    var t = { id: makeId(), laneId: selectedLaneId, title: 'New Task', start: s, end: e, color: null, milestone:false };
-    state.tasks.push(t);
-    selectedTaskId = t.id;
-    ensureRangeCovers(t.start, t.end);
+    state.laneWidth = width;
     markDirty('Autosaved');
     render();
-    setTimeout(function(){ openTaskEditor(t.id); }, 0);
-  };
+  }
+  function onLaneResizerDown(ev){
+    if (ev.button !== 0) return;
+    ev.preventDefault();
+    closeContextMenu();
+    var current = currentLaneWidth();
+    var max = laneMaxWidthFromContainer();
+    laneResizeInfo = {
+      startX: ev.clientX,
+      startWidth: current,
+      width: current,
+      min: LANE_MIN_WIDTH,
+      max: max,
+      guide: null
+    };
+    if (laneResizeInfo.max < laneResizeInfo.min) laneResizeInfo.max = laneResizeInfo.min;
+    if ($.resizer) $.resizer.classList.add('dragging');
+    var guide = document.createElement('div');
+    guide.className = 'rm-resize-guide';
+    document.body.appendChild(guide);
+    laneResizeInfo.guide = guide;
+    document.body.style.cursor = 'col-resize';
+    updateResizeGuide(current);
+    document.addEventListener('mousemove', onLaneResizerMove, true);
+    document.addEventListener('mouseup', onLaneResizerUp, true);
+    document.addEventListener('selectstart', preventSelection, true);
+  }
+  if ($.resizer){
+    $.resizer.setAttribute('aria-valuemin', String(LANE_MIN_WIDTH));
+    $.resizer.setAttribute('aria-valuemax', String(LANE_MAX_WIDTH));
+    $.resizer.addEventListener('mousedown', onLaneResizerDown);
+  }
 
   $.save.onclick = function(){
     $.save.disabled = true; $.status.textContent = 'Saving…';
@@ -1490,6 +1834,7 @@
     };
 
     node.addEventListener('mousedown', function(e){
+      if (e.button !== 0) return;
       var withinLeft = e.target.classList.contains('left');
       var withinRight = e.target.classList.contains('right');
       mode = withinLeft ? 'left' : (withinRight ? 'right' : 'move');
@@ -1863,38 +2208,20 @@
 
       if (e.key==='Enter' && selectedTaskId && !isTypingContext()){ e.preventDefault(); openTaskEditor(selectedTaskId); }
       if (e.key==='Insert' && selectedLaneId && !isTypingContext()){
-        pushUndo();
-        var s = fmt(today()), eDate = fmt(addDays(today(),0));
-        var t = { id: makeId(), laneId: selectedLaneId, title:'New Task', start:s, end:eDate, color:null, milestone:false };
-        state.tasks.push(t); ensureRangeCovers(t.start, t.end); markDirty('Autosaved'); render(); setTimeout(function(){ openTaskEditor(t.id); }, 0);
+        e.preventDefault();
+        createTask(selectedLaneId, { end: fmt(addDays(today(),0)), openEditor: true });
       }
       if (e.key==='Delete' && selectedTaskId && !isTypingContext()){
-        pushUndo(); state.tasks = state.tasks.filter(function(x){return x.id!==selectedTaskId;});
-        selectedTaskId = null; markDirty('Autosaved'); render();
+        e.preventDefault();
+        deleteSelectedTask();
       }
       if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='c' && selectedTaskId && !isTypingContext()){
         e.preventDefault();
-        var cTask = state.tasks.find(function(x){return x.id===selectedTaskId;});
-        if (cTask){ window.__rm_clipboard_task = JSON.parse(JSON.stringify(cTask)); }
+        copySelectedTask();
       }
       if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='v' && selectedLaneId && !isTypingContext()){
-        var clip = window.__rm_clipboard_task;
-        if (clip){
-          e.preventDefault(); pushUndo();
-          var newTask = {
-            id: makeId(),
-            laneId: selectedLaneId,
-            title: clip.title,
-            start: clip.start,
-            end: clip.end,
-            color: clip.color || null,
-            milestone: !!clip.milestone
-          };
-          state.tasks.push(newTask);
-          ensureRangeCovers(newTask.start, newTask.end);
-          selectedTaskId = newTask.id;
-          markDirty('Autosaved');
-          render();
+        if (pasteTaskIntoLane(selectedLaneId)){
+          e.preventDefault();
         }
       }
       if (!isTypingContext() && selectedLaneId && (e.key==='-' || e.key==='+')){
@@ -1967,6 +2294,7 @@
       }
 
       selectedLaneId = state.lanes[0] ? state.lanes[0].id : null;
+      if (typeof state.laneWidth !== 'number' || isNaN(state.laneWidth)) state.laneWidth = null;
 
       render();
 
