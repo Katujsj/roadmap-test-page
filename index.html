@@ -979,12 +979,15 @@
       if (!id){ hideTip(); return; }
       var task = state.tasks.find(function(x){ return x.id===id; });
       if (!task){ hideTip(); return; }
-      var text;
+      var lane = state.lanes.find(function(l){ return l.id === task.laneId; });
+      var isMilestoneLane = !!(lane && lane.milestone);
+      var text = isMilestoneLane
+        ? (task.title + ' : ' + task.end)
+        : (task.title + ' : ' + task.start + ' ~ ' + task.end);
       if (lastId !== id){
-        text = task.title + ' : ' + task.start + ' ~ ' + task.end;
         lastId = id;
       }
-      showTip(task.title + ' : ' + task.start + ' ~ ' + task.end, e.clientX, e.clientY);
+      showTip(text, e.clientX, e.clientY);
     }, { passive:true });
     $.canvas.addEventListener('pointerleave', function(){ lastId=null; hideTip(); }, { passive:true });
     $.canvas.addEventListener('pointerdown', function(e){ if (e.target.closest && e.target.closest('.rm-task')) hideTip(); }, { passive:true });
@@ -1562,9 +1565,7 @@
 
         if (isMilestoneDrag){
           var newEndStr = tl.xToDate(newLeft);
-          var deltaDays = (baseTaskEnd!=null) ? dateSpanDays(baseTaskEnd, newEndStr) : 0;
-          var shiftedStart = (baseTaskStart!=null) ? fmt(addDays(new Date(baseTaskStart), deltaDays)) : newEndStr;
-          var tipMs = (t ? t.title : 'Task') + ' : ' + shiftedStart + ' ~ ' + newEndStr;
+          var tipMs = (t ? t.title : 'Task') + ' : ' + newEndStr;
           showTip(tipMs, ev.clientX, ev.clientY);
         } else {
           // Live tooltip of new date range
