@@ -1510,38 +1510,46 @@
 
       pushUndo();
       var rcList = rowsCache();
-      var step = tl.stepPx;
+      var dayPx = tl.pxPerDay || 1;
+      var baseLeftDays = Math.round(baseLeft / dayPx);
+      var baseRightDays = Math.round(baseRight / dayPx);
+      var baseSpanDays = Math.max(1, baseRightDays - baseLeftDays);
 
       function onMove(ev){
         if (!mode) return;
         var dx = ev.clientX - startX;
-        var newLeft = baseLeft, newRight = baseRight;
-        if (state.scale === 'month'){
-          if (mode==='move'){
-            var weekly = 7 * tl.pxPerDay;
-            var shift = Math.round(dx / weekly) * weekly;
-            newLeft  = Math.max(0, baseLeft + shift);
-            newRight = Math.max(newLeft, newLeft + (baseRight - baseLeft));
-          } else if (mode==='left'){
-            newLeft = tl.nearestMonthPx(baseLeft + dx);
-            if (newLeft > baseRight) newLeft = baseRight;
-            newRight = baseRight;
-          } else if (mode==='right'){
-            newRight = tl.nearestMonthPx(baseRight + dx);
-            if (newRight < baseLeft) newRight = baseLeft;
-            newLeft = baseLeft;
+        var newLeft = baseLeft;
+        var newRight = baseRight;
+        if (mode === 'move'){
+          var shiftDays = Math.round(dx / dayPx);
+          var newLeftDays = baseLeftDays + shiftDays;
+          if (newLeftDays < 0) newLeftDays = 0;
+          newLeft = newLeftDays * dayPx;
+          if (isMilestoneDrag){
+            newRight = newLeft + baseSpanPx;
+          } else {
+            newRight = (newLeftDays + baseSpanDays) * dayPx;
           }
-        } else {
-          if (mode==='move'){
-            newLeft  = Math.max(0, Math.round((baseLeft  + dx)/step)*step);
-            newRight = Math.max(0, Math.round((baseRight + dx)/step)*step);
-          } else if (mode==='left'){
-            newLeft = Math.max(0, Math.round((baseLeft + dx)/step)*step);
-            if (newLeft > baseRight) newLeft = baseRight;
-          } else if (mode==='right'){
-            newRight = Math.max(0, Math.round((baseRight + dx)/step)*step);
-            if (newRight < baseLeft) newRight = baseLeft;
+        } else if (mode === 'left'){
+          var leftDays = Math.round((baseLeft + dx) / dayPx);
+          if (leftDays < 0) leftDays = 0;
+          if (!isMilestoneDrag){
+            var maxLeft = baseRightDays - 1;
+            if (leftDays > maxLeft) leftDays = maxLeft;
+          } else if (leftDays > baseRightDays){
+            leftDays = baseRightDays;
           }
+          newLeft = leftDays * dayPx;
+          newRight = baseRight;
+        } else if (mode === 'right'){
+          var rightDays = Math.round((baseRight + dx) / dayPx);
+          if (!isMilestoneDrag){
+            var minRight = baseLeftDays + 1;
+            if (rightDays < minRight) rightDays = minRight;
+          }
+          if (rightDays < 0) rightDays = 0;
+          newRight = rightDays * dayPx;
+          if (newRight < newLeft) newRight = newLeft;
         }
         if (isMilestoneDrag && mode==='move'){
           newRight = newLeft + baseSpanPx;
@@ -1562,8 +1570,8 @@
           // Live tooltip of new date range
           var newStart = tl.xToDate(newLeft);
           var spanDays = (mode==='move')
-            ? Math.max(1, Math.round((baseRight - baseLeft)/tl.pxPerDay))
-            : Math.max(1, Math.round((newRight - newLeft)/tl.pxPerDay));
+            ? Math.max(1, baseSpanDays)
+            : Math.max(1, Math.round((newRight - newLeft)/dayPx));
           var newEnd = fmt(addDays(new Date(newStart), spanDays - 1));
           var tip = (t ? t.title : 'Task') + ' : ' + newStart + ' ~ ' + newEnd;
           showTip(tip, ev.clientX, ev.clientY);
