@@ -719,6 +719,111 @@
     return { rows:rows, rowHeight:rowHeight, pos:pos };
   }
 
+  function positionMilestoneLanes(entries, weekendLayer, tl){
+    if (!entries.length) return;
+    requestAnimationFrame(function(){
+      var delta = 0;
+      for (var i=0;i<entries.length;i++){
+        delta += positionMilestonesForLane(entries[i]);
+      }
+      if (delta > 0){
+        var newHeight = $.canvas.scrollHeight;
+        weekendLayer.style.height = newHeight + 'px';
+        buildWeekendBands(weekendLayer, newHeight, tl.totalWidth, tl);
+      }
+    });
+  }
+
+  function positionMilestonesForLane(entry){
+    if (!entry || !entry.items || !entry.items.length) return 0;
+    var laneEl = entry.laneEl;
+    var rowEl = entry.rowEl;
+    if (!laneEl || !rowEl) return 0;
+
+    var baseHeight = entry.baseHeight || (TRACK.pad*2 + TRACK.height);
+    var items = entry.items;
+
+    for (var r=0; r<items.length; r++){
+      items[r].el.style.top = items[r].baseTop + 'px';
+    }
+
+    var rowRect = rowEl.getBoundingClientRect();
+    var data = [];
+    var maxLabelH = 0;
+    for (var i=0;i<items.length;i++){
+      var el = items[i].el;
+      var label = el.querySelector('.rm-milestone-label');
+      if (!label) continue;
+      var rect = label.getBoundingClientRect();
+      var left = rect.left - rowRect.left;
+      var right = rect.right - rowRect.left;
+      data.push({ item:items[i], left:left, right:right, height:rect.height });
+      if (rect.height > maxLabelH) maxLabelH = rect.height;
+    }
+    if (!data.length) return 0;
+
+    data.sort(function(a,b){ return a.left - b.left; });
+
+    var levelGap = Math.max(maxLabelH + 8, TRACK.height + 8);
+    var levelRight = {};
+    var assignments = [];
+    var minOffset = 0;
+    var maxOffset = 0;
+    var spacing = levelGap;
+
+    function candidateAt(idx){
+      if (idx === 0) return 0;
+      var magnitude = Math.floor((idx + 1) / 2);
+      return (idx % 2 === 1) ? magnitude : -magnitude;
+    }
+
+    for (var d=0; d<data.length; d++){
+      var itemData = data[d];
+      var level = 0;
+      var idx = 0;
+      while (true){
+        var candidate = candidateAt(idx);
+        var limit = levelRight[candidate];
+        if (limit == null || itemData.left >= limit){
+          level = candidate;
+          levelRight[candidate] = itemData.right + 8;
+          break;
+        }
+        idx++;
+        if (idx > 20){
+          level = candidate;
+          break;
+        }
+      }
+      var offset = level * spacing;
+      if (offset < minOffset) minOffset = offset;
+      if (offset > maxOffset) maxOffset = offset;
+      assignments.push({ item:itemData.item, offset:offset });
+    }
+
+    var extraTop = Math.max(0, -minOffset);
+    var extraBottom = Math.max(0, maxOffset);
+    var newHeight = baseHeight + extraTop + extraBottom;
+    laneEl.style.height = newHeight + 'px';
+    rowEl.style.height = newHeight + 'px';
+
+    for (var a=0; a<assignments.length; a++){
+      var info = assignments[a];
+      var newTop = info.item.baseTop + info.offset + extraTop;
+      info.item.el.style.top = newTop + 'px';
+    }
+
+    if (extraTop > 0){
+      var others = rowEl.querySelectorAll('.rm-task:not([data-milestone="1"])');
+      for (var o=0; o<others.length; o++){
+        var current = parseFloat(others[o].style.top) || 0;
+        others[o].style.top = (current + extraTop) + 'px';
+      }
+    }
+
+    return extraTop + extraBottom;
+  }
+
   /* ========= Rollup (Inclusive) ========= */
   function computeRollup(parentLaneId){
     var descIds = descendantsOf(parentLaneId);
@@ -841,14 +946,19 @@
     $.container.style.setProperty('--laneColWidth', laneColWidth + 'px');
 
     var totalCanvasH = 0;
+    var milestoneLanes = [];
 
     flattened.forEach(function(item){
       var lane=item.lane, depth=item.depth, hasChildren=item.hasChildren;
       var laneTasks = tasksByLane[lane.id] || [];
       var layout = layoutLane(lane, laneTasks);
       var isMilestoneLane = !!lane.milestone;
+      var laneMeta = null;
+      if (isMilestoneLane){
+        laneMeta = { laneEl:null, rowEl:null, baseHeight:layout.rowHeight, items:[] };
+        milestoneLanes.push(laneMeta);
+      }
       totalCanvasH += layout.rowHeight;
-
       var L = document.createElement('div');
       L.className = 'rm-lane' + ((selectedLaneId===lane.id)?' sel':'');
       L.setAttribute('data-lane', lane.id);
@@ -864,6 +974,7 @@
         + '<input value="'+escapeHtml(lane.name)+'" data-lane-name="'+lane.id+'" aria-label="그룹 이름" />'
         + '<button class="rm-btn rm-del-lane" data-del-lane="'+lane.id+'" title="Delete lane" aria-label="그룹 삭제">✕</button>';
       lanesFrag.appendChild(L);
+      if (laneMeta) laneMeta.laneEl = L;
 
       var R = document.createElement('div');
       R.className = 'rm-row' + ((selectedLaneId===lane.id)?' sel':'');
@@ -871,6 +982,7 @@
       R.style.minWidth = tl.totalWidth + 'px';
       R.style.height = layout.rowHeight+'px';
       rowsFrag.appendChild(R);
+      if (laneMeta) laneMeta.rowEl = R;
 
       R.addEventListener('click', function(e){
         if (e.target.closest && (e.target.closest('.rm-task') || e.target.closest('.rm-handle'))) return;
@@ -906,6 +1018,7 @@
             +   '<span class="rm-milestone-title">'+escapeHtml(task.title)+'</span>'
             +   '<span class="rm-milestone-date">'+task.end+'</span>'
             + '</div>';
+          if (laneMeta) laneMeta.items.push({ el:t, baseTop:top });
         } else {
           var left = tl.dateToX(task.start);
           var rightInc = tl.dateToX(fmt(addDays(new Date(task.end),1))); // end+1
@@ -968,6 +1081,7 @@
     weekendLayer.style.height = totalCanvasH + 'px';
     $.canvas.appendChild(weekendLayer);
     buildWeekendBands(weekendLayer, totalCanvasH, tl.totalWidth, tl);
+    positionMilestoneLanes(milestoneLanes, weekendLayer, tl);
 
     updateTodayMarkers(tl);
     requestSync();
