@@ -32,7 +32,7 @@
   .rm-header-resizer::after { content:''; position:absolute; top:0; bottom:0; left:50%; width:2px; transform:translateX(-50%); border-radius:1px; background:#e5e7eb; }
 
   /* Grid: lanes 고정, canvas만 가로 스크롤 */
-  .rm-grid { display:grid; grid-template-columns:var(--laneColWidth) 6px 1fr; max-height:560px; overflow-y:auto; overflow-x:hidden; }
+  .rm-grid { display:grid; grid-template-columns:var(--laneColWidth) 6px 1fr; overflow-y:visible; overflow-x:hidden; }
   .rm-laneswrap { overflow:hidden; grid-column:1; }
   .rm-resizer { position:relative; width:6px; cursor:col-resize; grid-column:2; }
   .rm-canvaswrap { grid-column:3; }
