@@ -25,9 +25,11 @@
   .rm-root:fullscreen .rm-canvaswrap { overflow:auto; }
 
   /* Header */
-  .rm-header { display:grid; grid-template-columns:var(--laneColWidth) 1fr; background:#fcfcfd; border-bottom:1px solid #eee; }
+  .rm-header { display:grid; grid-template-columns:var(--laneColWidth) 6px 1fr; background:#fcfcfd; border-bottom:1px solid #eee; }
   .rm-header .rm-left { padding:10px 12px; font-weight:600; color:#111; }
   .rm-header .rm-scale { position:relative; border-left:1px solid #eee; overflow:hidden; }
+  .rm-header-resizer { position:relative; width:6px; pointer-events:none; }
+  .rm-header-resizer::after { content:''; position:absolute; top:0; bottom:0; left:50%; width:2px; transform:translateX(-50%); border-radius:1px; background:#e5e7eb; }
 
   /* Grid: lanes 고정, canvas만 가로 스크롤 */
   .rm-grid { display:grid; grid-template-columns:var(--laneColWidth) 6px 1fr; max-height:560px; overflow-y:auto; overflow-x:hidden; }
@@ -581,6 +583,7 @@
   + '<div class="rm-container" id="rm-container">'
   + '  <div class="rm-header">'
   + '    <div class="rm-left">그룹</div>'
+  + '    <div class="rm-header-resizer" aria-hidden="true"></div>'
   + '    <div class="rm-scale">'
   + '      <div class="rm-weekend-head" id="rm-weekend-head"></div>'
   + '      <div class="rm-ticks" id="rm-ticks"></div>'
