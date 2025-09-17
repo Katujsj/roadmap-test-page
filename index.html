@@ -8,6 +8,12 @@
   .rm-btn { padding:6px 10px; border:1px solid #e5e7eb; border-radius:10px; background:#fff; cursor:pointer; }
   .rm-btn:hover { background:#f5f5f5; }
   .rm-select, .rm-input { padding:6px 8px; border:1px solid #e5e7eb; border-radius:8px; background:#fff; }
+  .rm-dropdown { position:relative; }
+  .rm-dropdown__toggle::after { content:'\25BE'; margin-left:4px; font-size:10px; }
+  .rm-dropdown__menu { position:absolute; right:0; top:calc(100% + 4px); background:#fff; border:1px solid #e5e7eb; border-radius:10px; box-shadow:0 8px 16px rgba(15,23,42,0.12); padding:4px; min-width:140px; display:none; z-index:30; }
+  .rm-dropdown.open .rm-dropdown__menu { display:flex; flex-direction:column; gap:2px; }
+  .rm-dropdown__item { padding:6px 10px; border-radius:8px; border:none; background:transparent; text-align:left; font-size:12px; cursor:pointer; }
+  .rm-dropdown__item:hover { background:#f5f5f5; }
   .rm-container { --laneColWidth:220px; border:1px solid #e5e7eb; border-radius:12px; overflow:hidden; }
   /* Fullscreen adjustments */
   .rm-container:fullscreen { width:100vw; height:100vh; background:#fff; }
@@ -224,6 +230,26 @@
         return fetch(url, { method:'POST', body:form, headers:{'X-Atlassian-Token':'no-check'}, credentials:'same-origin' });
       })
       .then(function(res){ if (!res.ok) throw new Error('Attachment save failed: ' + res.status); });
+  }
+
+  function exportStateAsFile(){
+    try {
+      var serialized = JSON.stringify(state, null, 2);
+      var blob = new Blob([serialized], { type: 'application/json' });
+      var url = URL.createObjectURL(blob);
+      var base = ATT_NAME ? ATT_NAME.replace(/\.json$/, '') : 'roadmap-data';
+      var stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      var filename = base + '-export-' + stamp.slice(0, 19) + '.json';
+      var link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(function(){ document.body.removeChild(link); URL.revokeObjectURL(url); }, 0);
+    } catch (err) {
+      console.error(err);
+      alert('데이터 내보내기에 실패했습니다. 콘솔을 확인해주세요.');
+    }
   }
 
   /* ========= Data Import (CSV / JSON) ========= */
@@ -543,7 +569,13 @@
   + '  <span class="rm-pill" id="rm-status">로드됨</span>'
   + '  <div style="flex:1"></div>'
   + '  <button class="rm-btn" id="rm-fullscreen" aria-label="전체 화면">전체 화면</button>'
-  + '  <button class="rm-btn" id="rm-import" aria-label="데이터 가져오기">데이터 가져오기</button>'
+  + '  <div class="rm-dropdown" id="rm-data-menu">'
+  + '    <button class="rm-btn rm-dropdown__toggle" id="rm-data-menu-toggle" aria-haspopup="true" aria-expanded="false">데이터</button>'
+  + '    <div class="rm-dropdown__menu" id="rm-data-menu-list" role="menu">'
+  + '      <button class="rm-dropdown__item" id="rm-data-import" role="menuitem">데이터 가져오기</button>'
+  + '      <button class="rm-dropdown__item" id="rm-data-export" role="menuitem">데이터 내보내기</button>'
+  + '    </div>'
+  + '  </div>'
   + '  <button class="rm-btn" id="rm-save" aria-label="페이지에 저장하기">페이지에 저장하기</button>'
   + '</div>'
   + '<div class="rm-container" id="rm-container">'
@@ -572,7 +604,11 @@
     start: byId('rm-start'),
     end: byId('rm-end'),
     save: byId('rm-save'),
-    importBtn: byId('rm-import'),
+    dataMenu: byId('rm-data-menu'),
+    dataMenuToggle: byId('rm-data-menu-toggle'),
+    dataMenuList: byId('rm-data-menu-list'),
+    importBtn: byId('rm-data-import'),
+    exportBtn: byId('rm-data-export'),
     fullscreen: byId('rm-fullscreen'),
     root: byId('rm-root'),
     status: byId('rm-status'),
@@ -586,6 +622,26 @@
     resizer: byId('rm-lane-resizer'),
     grid: byId('rm-grid')
   };
+
+  function isDataMenuOpen(){ return !!($.dataMenu && $.dataMenu.classList.contains('open')); }
+  function setDataMenuOpen(open){
+    if (!$.dataMenu) return;
+    if (open){
+      $.dataMenu.classList.add('open');
+      if ($.dataMenuToggle) $.dataMenuToggle.setAttribute('aria-expanded', 'true');
+      document.addEventListener('mousedown', handleDataMenuOutside, true);
+      document.addEventListener('keydown', handleDataMenuKeydown, true);
+    } else {
+      $.dataMenu.classList.remove('open');
+      if ($.dataMenuToggle) $.dataMenuToggle.setAttribute('aria-expanded', 'false');
+      document.removeEventListener('mousedown', handleDataMenuOutside, true);
+      document.removeEventListener('keydown', handleDataMenuKeydown, true);
+    }
+  }
+  function toggleDataMenu(){ setDataMenuOpen(!isDataMenuOpen()); }
+  function closeDataMenu(){ setDataMenuOpen(false); }
+  function handleDataMenuOutside(ev){ if (!$.dataMenu || $.dataMenu.contains(ev.target)) return; closeDataMenu(); }
+  function handleDataMenuKeydown(ev){ if (ev.key === 'Escape') closeDataMenu(); }
 
   /* ========= Timeline helpers ========= */
   function dateSpanDays(a,b){ return Math.round((new Date(b)-new Date(a))/(24*3600*1000)); }
@@ -1270,7 +1326,6 @@
     markDirty('Autosaved');
     render();
   };
-  $.importBtn.onclick = function(){ openDataImport(); };
 
   /* Fullscreen toggle */
   function isFullscreen(){
@@ -1565,6 +1620,15 @@
   }
 
   /* 추가/저장 */
+  if ($.dataMenuToggle){
+    $.dataMenuToggle.addEventListener('click', function(ev){ ev.preventDefault(); ev.stopPropagation(); toggleDataMenu(); });
+  }
+  if ($.importBtn){
+    $.importBtn.addEventListener('click', function(ev){ ev.preventDefault(); closeDataMenu(); openDataImport(); });
+  }
+  if ($.exportBtn){
+    $.exportBtn.addEventListener('click', function(ev){ ev.preventDefault(); closeDataMenu(); exportStateAsFile(); });
+  }
   $.addLane.onclick = function(){ createLane(null); };
   $.addSubLane.onclick = function(){
     if (!selectedLaneId){ alert('먼저 상위 레인을 선택하세요.'); return; }
