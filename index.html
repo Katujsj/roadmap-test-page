@@ -880,6 +880,8 @@
   /* ========= Layout (Inclusive) ========= */
   var TRACK = { pad:8, gap:6, height:28 };
   var MILESTONE = { size:18 };
+  var DRAG_ACTIVATE_DELAY = 180; // hold duration before drag engages automatically (ms)
+  var DRAG_ACTIVATE_DISTANCE = 8; // px movement to activate drag immediately
   function isTaskMilestone(task, lane){
     if (!task) return false;
     if (task.milestone !== undefined) return !!task.milestone;
@@ -2061,6 +2063,20 @@
       mode = withinLeft ? 'left' : (withinRight ? 'right' : 'move');
       startX = e.clientX;
 
+      var dragPrimed = false;
+      var dragPrimeTimer = null;
+      function cancelPrimeTimer(){ if (dragPrimeTimer){ clearTimeout(dragPrimeTimer); dragPrimeTimer = null; } }
+      function ensureDragPrimedBy(clientX){
+        if (dragPrimed) return true;
+        if (Math.abs(clientX - startX) >= DRAG_ACTIVATE_DISTANCE){
+          dragPrimed = true;
+          cancelPrimeTimer();
+          return true;
+        }
+        return false;
+      }
+      dragPrimeTimer = setTimeout(function(){ dragPrimed = true; dragPrimeTimer = null; }, DRAG_ACTIVATE_DELAY);
+
       multiMeta = null;
       selectionIdsAtDrag = [];
       lastShiftDays = 0;
@@ -2134,6 +2150,9 @@
       function onMove(ev){
         if (!mode) return;
         var dx = ev.clientX - startX;
+        if (!dragPrimed && !ensureDragPrimedBy(ev.clientX)) return;
+        dragPrimed = true;
+        cancelPrimeTimer();
         var newLeft = baseLeft;
         var newRight = baseRight;
         var shiftDays = 0;
@@ -2213,6 +2232,15 @@
 
       function onUp(ev){
         if (!mode) return;
+        cancelPrimeTimer();
+        if (!dragPrimed){
+          undoStack.pop && undoStack.pop();
+          mode = null;
+          window.removeEventListener('mousemove', onMove);
+          window.removeEventListener('mouseup', onUp);
+          dragActive = false; hideTip();
+          return;
+        }
         var t = state.tasks.find(function(t){return t.id===id;});
         if (t){
           var newLeft  = (node.__left!=null)? node.__left : parseInt(node.style.left,10);
@@ -2297,6 +2325,20 @@
       mode = withinLeft ? 'left' : (withinRight ? 'right' : 'move');
       startX = t0.clientX;
 
+      var dragPrimed = false;
+      var dragPrimeTimer = null;
+      function cancelPrimeTimer(){ if (dragPrimeTimer){ clearTimeout(dragPrimeTimer); dragPrimeTimer = null; } }
+      function ensureDragPrimedBy(clientX){
+        if (dragPrimed) return true;
+        if (Math.abs(clientX - startX) >= DRAG_ACTIVATE_DISTANCE){
+          dragPrimed = true;
+          cancelPrimeTimer();
+          return true;
+        }
+        return false;
+      }
+      dragPrimeTimer = setTimeout(function(){ dragPrimed = true; dragPrimeTimer = null; }, DRAG_ACTIVATE_DELAY);
+
       var t = state.tasks.find(function(tt){return tt.id===id;});
       var lane = t ? state.lanes.find(function(l){ return l.id===t.laneId; }) : null;
       isMilestoneDrag = isTaskMilestone(t, lane);
@@ -2321,7 +2363,11 @@
       function onMoveTouch(ev){
         if (!mode) return;
         if (!ev.touches || !ev.touches[0]) return;
-        var dx = ev.touches[0].clientX - startX;
+        var touchX = ev.touches[0].clientX;
+        var dx = touchX - startX;
+        if (!dragPrimed && !ensureDragPrimedBy(touchX)) return;
+        dragPrimed = true;
+        cancelPrimeTimer();
         var newLeft = baseLeft, newRight = baseRight;
         if (state.scale === 'month'){
           if (mode==='move'){
@@ -2380,6 +2426,15 @@
       function onUpTouch(ev){
         var cy = (ev.changedTouches && ev.changedTouches[0]) ? ev.changedTouches[0].clientY : 0;
         if (!mode) return;
+        cancelPrimeTimer();
+        if (!dragPrimed){
+          undoStack.pop && undoStack.pop();
+          mode = null;
+          dragActive = false; hideTip();
+          window.removeEventListener('touchmove', onMoveTouch);
+          window.removeEventListener('touchend', onUpTouch);
+          return;
+        }
         var tt = state.tasks.find(function(x){return x.id===id;});
         if (tt){
           var newLeft  = (node.__left!=null)? node.__left : parseInt(node.style.left,10);
