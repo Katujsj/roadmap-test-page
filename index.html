@@ -215,7 +215,8 @@
 
   var state = JSON.parse(JSON.stringify(DEFAULT));
   var selectedLaneId = null;
-  var selectedTaskId = null;
+  var selectedTaskId = null; // legacy primary selection
+  var selectedTaskIds = [];
   var modalOpen = false;
   var laneResizeInfo = null;
   var LANE_MIN_WIDTH = 160;
@@ -224,9 +225,23 @@
   var undoStack = [];
   var redoStack = [];
   var MAX_UNDO = 100;
-  var snapshot = function(){ return { state: JSON.parse(JSON.stringify(state)), selectedLaneId: selectedLaneId, selectedTaskId: selectedTaskId }; };
+  var snapshot = function(){
+    return {
+      state: JSON.parse(JSON.stringify(state)),
+      selectedLaneId: selectedLaneId,
+      selectedTaskId: selectedTaskId,
+      selectedTaskIds: selectedTaskIds.slice()
+    };
+  };
   function pushUndo(){ undoStack.push(snapshot()); if (undoStack.length>MAX_UNDO) undoStack.shift(); redoStack.length = 0; }
-  function applySnap(snap){ state = JSON.parse(JSON.stringify(snap.state)); selectedLaneId = snap.selectedLaneId; selectedTaskId = snap.selectedTaskId; markDirty('Autosaved'); render(); }
+  function applySnap(snap){
+    state = JSON.parse(JSON.stringify(snap.state));
+    selectedLaneId = snap.selectedLaneId;
+    selectedTaskId = snap.selectedTaskId;
+    selectedTaskIds = Array.isArray(snap.selectedTaskIds) ? snap.selectedTaskIds.slice() : (selectedTaskId ? [selectedTaskId] : []);
+    markDirty('Autosaved');
+    render();
+  }
   function doUndo(){ if (!undoStack.length) return; var curr=snapshot(); var prev=undoStack.pop(); redoStack.push(curr); applySnap(prev); }
   function doRedo(){ if (!redoStack.length) return; var curr=snapshot(); var next=redoStack.pop(); undoStack.push(curr); applySnap(next); }
 
@@ -1196,7 +1211,7 @@
         var isMilestoneTask = isTaskMilestone(task, lane);
         var color = task.color || lane.color || '#e5e7eb';
         var t = document.createElement('div');
-        var selCls = (selectedTaskId===task.id)?' sel':'';
+        var selCls = (selectedTaskIds.indexOf(task.id) >= 0) ? ' sel' : '';
         t.setAttribute('data-id', task.id);
         t.setAttribute('role','button');
         t.setAttribute('tabindex','0');
@@ -1243,7 +1258,11 @@
         t.addEventListener('click', function(e){
           e.stopPropagation();
           selectLaneNoRender(lane.id);
-          selectTaskNoRender(task.id);
+          if (e.shiftKey){
+            selectTaskNoRender(task.id, { append:true, toggle:true });
+          } else {
+            selectTaskNoRender(task.id);
+          }
         });
 
         makeDraggable(t, R, tl);
@@ -1286,15 +1305,74 @@
     positionMilestoneLanes(milestoneLanes, weekendLayer, tl);
 
     updateTodayMarkers(tl);
+    syncTaskSelectionUI();
     requestSync();
   }
 
-  function selectTaskNoRender(id){
-    selectedTaskId = id || null;
+  function syncTaskSelectionUI(){
     Array.prototype.forEach.call(document.querySelectorAll('.rm-task.sel'), function(x){ x.classList.remove('sel'); });
+    if (!selectedTaskIds || !selectedTaskIds.length) return;
+    selectedTaskIds.forEach(function(selId){
+      var el = $.canvas.querySelector('.rm-task[data-id="'+selId+'"]');
+      if (el) el.classList.add('sel');
+    });
+  }
+
+  function selectTaskNoRender(id, opts){
+    opts = opts || {};
+
+    if (id == null && !opts.append){
+      selectedTaskId = null;
+      selectedTaskIds = [];
+      syncTaskSelectionUI();
+      return;
+    }
+
+    if (id == null){
+      return;
+    }
+
+    if (opts.append){
+      var exists = selectedTaskIds.indexOf(id) >= 0;
+      if (opts.toggle && exists){
+        selectedTaskIds = selectedTaskIds.filter(function(x){ return x !== id; });
+        if (selectedTaskId === id){
+          selectedTaskId = selectedTaskIds.length ? selectedTaskIds[selectedTaskIds.length - 1] : null;
+        }
+      } else {
+        if (!exists){ selectedTaskIds = selectedTaskIds.concat(id); }
+        selectedTaskId = id;
+      }
+    } else {
+      selectedTaskId = id;
+      selectedTaskIds = [id];
+    }
+
+    if (!selectedTaskIds.length){
+      selectedTaskId = null;
+    }
+
+    syncTaskSelectionUI();
+  }
+
+  function clearTaskSelection(){
+    selectedTaskId = null;
+    selectedTaskIds = [];
+    syncTaskSelectionUI();
+  }
+
+  function ensurePrimaryTaskSelection(id){
     if (!id) return;
-    var e = $.canvas.querySelector('.rm-task[data-id="'+id+'"]');
-    if (e) e.classList.add('sel');
+    var idx = selectedTaskIds.indexOf(id);
+    if (idx === -1) return;
+    if (idx === selectedTaskIds.length - 1){
+      selectedTaskId = id;
+      return;
+    }
+    selectedTaskIds.splice(idx, 1);
+    selectedTaskIds.push(id);
+    selectedTaskId = id;
+    syncTaskSelectionUI();
   }
 
   function selectLaneNoRender(id){
@@ -1569,6 +1647,7 @@
     state.lanes.push(lane);
     selectedLaneId = lane.id;
     selectedTaskId = null;
+    selectedTaskIds = [];
     markDirty('Autosaved');
     render();
     return lane;
@@ -1597,6 +1676,7 @@
     state.tasks.push(task);
     selectedLaneId = laneId;
     selectedTaskId = task.id;
+    selectedTaskIds = [task.id];
     ensureRangeCovers(task.start, task.end);
     markDirty('Autosaved');
     render();
@@ -1605,18 +1685,20 @@
   }
 
   function deleteSelectedTask(){
-    if (!selectedTaskId) return false;
+    if (!selectedTaskIds || selectedTaskIds.length === 0) return false;
     pushUndo();
-    state.tasks = state.tasks.filter(function(x){ return x.id !== selectedTaskId; });
-    selectTaskNoRender(null);
+    var removeSet = selectedTaskIds.slice();
+    state.tasks = state.tasks.filter(function(x){ return removeSet.indexOf(x.id) === -1; });
+    clearTaskSelection();
     markDirty('Autosaved');
     render();
     return true;
   }
 
   function copySelectedTask(){
-    if (!selectedTaskId) return false;
-    var cTask = state.tasks.find(function(x){ return x.id === selectedTaskId; });
+    var targetId = selectedTaskId || (selectedTaskIds.length ? selectedTaskIds[selectedTaskIds.length - 1] : null);
+    if (!targetId) return false;
+    var cTask = state.tasks.find(function(x){ return x.id === targetId; });
     if (!cTask) return false;
     window.__rm_clipboard_task = JSON.parse(JSON.stringify(cTask));
     return true;
@@ -1640,6 +1722,7 @@
     state.tasks.push(newTask);
     selectedLaneId = laneId;
     selectedTaskId = newTask.id;
+    selectedTaskIds = [newTask.id];
     ensureRangeCovers(newTask.start, newTask.end);
     markDirty('Autosaved');
     render();
@@ -1923,6 +2006,9 @@
         return { el:r, rect:r.getBoundingClientRect(), laneId:r.getAttribute('data-lane') };
       });
     };
+    var lastShiftDays = 0;
+    var multiMeta = null;
+    var selectionIdsAtDrag = [];
 
     node.addEventListener('mousedown', function(e){
       if (e.button !== 0) return;
@@ -1930,6 +2016,10 @@
       var withinRight = e.target.classList.contains('right');
       mode = withinLeft ? 'left' : (withinRight ? 'right' : 'move');
       startX = e.clientX;
+
+      multiMeta = null;
+      selectionIdsAtDrag = [];
+      lastShiftDays = 0;
 
       var t = state.tasks.find(function(t){return t.id===id;});
       var lane = t ? state.lanes.find(function(l){ return l.id===t.laneId; }) : null;
@@ -1947,7 +2037,19 @@
       }
       baseSpanPx = baseRight - baseLeft;
 
-      hideTip(); selectTaskNoRender(id); e.preventDefault(); dragActive = true;
+      if (lane){ selectLaneNoRender(lane.id); }
+      if (e.shiftKey){
+        selectTaskNoRender(id, { append:true });
+      } else if (selectedTaskIds.indexOf(id) === -1){
+        selectTaskNoRender(id);
+      } else {
+        ensurePrimaryTaskSelection(id);
+      }
+      selectionIdsAtDrag = selectedTaskIds.slice();
+
+      hideTip();
+      e.preventDefault();
+      dragActive = true;
 
       pushUndo();
       var rcList = rowsCache();
@@ -1956,13 +2058,43 @@
       var baseRightDays = Math.round(baseRight / dayPx);
       var baseSpanDays = Math.max(1, baseRightDays - baseLeftDays);
 
+      if (mode === 'move' && selectionIdsAtDrag.length > 1){
+        multiMeta = selectionIdsAtDrag.map(function(selId){
+          var selTask = state.tasks.find(function(taskItem){ return taskItem.id === selId; });
+          if (!selTask) return null;
+          var selLane = state.lanes.find(function(l){ return l.id === selTask.laneId; }) || null;
+          var selIsMilestone = isTaskMilestone(selTask, selLane);
+          var leftPxSel = selIsMilestone ? tl.dateToX(selTask.end) : tl.dateToX(selTask.start);
+          var rightPxSel = selIsMilestone
+            ? leftPxSel + (MILESTONE && MILESTONE.size ? MILESTONE.size : 18)
+            : tl.dateToX(fmt(addDays(new Date(selTask.end), 1)));
+          var nodeSel = (selId === id) ? node : $.canvas.querySelector('.rm-task[data-id="'+selId+'"]');
+          if (!nodeSel) return null;
+          return {
+            id: selId,
+            task: selTask,
+            lane: selLane,
+            isMilestone: selIsMilestone,
+            node: nodeSel,
+            baseStart: selTask.start,
+            baseEnd: selTask.end,
+            baseLeft: leftPxSel,
+            baseRight: rightPxSel,
+            baseSpanPx: rightPxSel - leftPxSel
+          };
+        }).filter(function(x){ return !!x; });
+      } else {
+        multiMeta = null;
+      }
+
       function onMove(ev){
         if (!mode) return;
         var dx = ev.clientX - startX;
         var newLeft = baseLeft;
         var newRight = baseRight;
+        var shiftDays = 0;
         if (mode === 'move'){
-          var shiftDays = Math.round(dx / dayPx);
+          shiftDays = Math.round(dx / dayPx);
           var newLeftDays = baseLeftDays + shiftDays;
           if (newLeftDays < 0) newLeftDays = 0;
           newLeft = newLeftDays * dayPx;
@@ -2001,6 +2133,24 @@
         node.__left = newLeft;
         node.__right = isMilestoneDrag ? (newLeft + baseSpanPx) : newRight;
 
+        if (mode === 'move'){
+          lastShiftDays = shiftDays;
+          if (multiMeta && multiMeta.length > 1){
+            var shiftPx = shiftDays * dayPx;
+            multiMeta.forEach(function(meta){
+              if (meta.id === id) return;
+              if (!meta.node) return;
+              var mLeft = meta.baseLeft + shiftPx;
+              var spanPx = meta.baseSpanPx;
+              var targetWidth = meta.isMilestone ? Math.max(MILESTONE.size, Math.max(0, spanPx)) : Math.max(16, spanPx);
+              meta.node.style.left = mLeft + 'px';
+              meta.node.style.width = targetWidth + 'px';
+              meta.node.__left = mLeft;
+              meta.node.__right = meta.isMilestone ? (mLeft + spanPx) : (mLeft + spanPx);
+            });
+          }
+        }
+
         if (isMilestoneDrag){
           var newEndStr = tl.xToDate(newLeft);
           var tipMs = (t ? t.title : 'Task') + ' : ' + newEndStr;
@@ -2023,11 +2173,13 @@
         if (t){
           var newLeft  = (node.__left!=null)? node.__left : parseInt(node.style.left,10);
           var newRight = (node.__right!=null)? node.__right: (newLeft + parseInt(node.style.width,10));
+          var appliedShiftDays = 0;
           if (isMilestoneDrag){
             var newEndStr = tl.xToDate(newLeft);
             var shiftDays = (baseTaskEnd!=null) ? dateSpanDays(baseTaskEnd, newEndStr) : 0;
             if (baseTaskStart!=null){ t.start = fmt(addDays(new Date(baseTaskStart), shiftDays)); }
             t.end = newEndStr;
+            if (mode === 'move') appliedShiftDays = shiftDays;
           } else {
             var start = tl.xToDate(newLeft);
             var spanDays = (mode==='move')
@@ -2035,18 +2187,51 @@
               : Math.max(1, Math.round((newRight - newLeft)/tl.pxPerDay));
             var end   = fmt(addDays(new Date(start), spanDays - 1));
             t.start = start; t.end = end;
-          }
-
-          var y = ev.clientY;
-          for (var i=0;i<rcList.length;i++){
-            var r = rcList[i];
-            if (y >= r.rect.top && y <= r.rect.bottom){
-              var dropLane = r.laneId;
-              if (dropLane && dropLane !== t.laneId){ t.laneId = dropLane; selectedLaneId = dropLane; }
-              break;
+            if (mode === 'move' && baseTaskStart!=null){
+              appliedShiftDays = dateSpanDays(baseTaskStart, t.start);
             }
           }
-          ensureRangeCovers(t.start, t.end); markDirty('Autosaved'); render();
+
+          if (!multiMeta || multiMeta.length <= 1){
+            var y = ev.clientY;
+            for (var i=0;i<rcList.length;i++){
+              var r = rcList[i];
+              if (y >= r.rect.top && y <= r.rect.bottom){
+                var dropLane = r.laneId;
+                if (dropLane && dropLane !== t.laneId){ t.laneId = dropLane; selectedLaneId = dropLane; }
+                break;
+              }
+            }
+          }
+
+          ensureRangeCovers(t.start, t.end);
+
+          if (mode === 'move' && appliedShiftDays === 0 && lastShiftDays){
+            appliedShiftDays = lastShiftDays;
+          }
+
+          if (mode === 'move' && multiMeta && multiMeta.length > 1){
+            multiMeta.forEach(function(meta){
+              if (meta.id === id) return;
+              if (!meta.task) return;
+              if (!meta.baseEnd) meta.baseEnd = meta.task.end;
+              if (!meta.baseStart) meta.baseStart = meta.task.start;
+              if (appliedShiftDays === 0) return;
+              if (meta.isMilestone){
+                var newMetaEnd = fmt(addDays(new Date(meta.baseEnd), appliedShiftDays));
+                meta.task.end = newMetaEnd;
+                if (meta.baseStart){
+                  meta.task.start = fmt(addDays(new Date(meta.baseStart), appliedShiftDays));
+                }
+              } else {
+                meta.task.start = fmt(addDays(new Date(meta.baseStart), appliedShiftDays));
+                meta.task.end = fmt(addDays(new Date(meta.baseEnd), appliedShiftDays));
+              }
+              ensureRangeCovers(meta.task.start, meta.task.end);
+            });
+          }
+
+          markDirty('Autosaved'); render();
         } else { undoStack.pop && undoStack.pop(); }
 
         mode = null;
@@ -2319,7 +2504,7 @@
         e.preventDefault();
         createTask(selectedLaneId, { end: fmt(addDays(today(),0)), openEditor: true });
       }
-      if (e.key==='Delete' && selectedTaskId && !isTypingContext()){
+      if (e.key==='Delete' && selectedTaskIds.length && !isTypingContext()){
         e.preventDefault();
         deleteSelectedTask();
       }
