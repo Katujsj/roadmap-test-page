@@ -1414,8 +1414,6 @@
     if (state.tasks && state.tasks.length){
       fitRangeToAllTasks();
     }
-    // Then fit the final range to current viewport width
-    fitRangeToViewport();
     markDirty('Autosaved'); render();
   };
   $.start.onchange = function(e){ pushUndo(); state.start = e.target.value; markDirty('Autosaved'); render(); };
@@ -1502,6 +1500,7 @@
       var ids = [id2].concat(descendantsOf(id2));
       state.tasks = state.tasks.filter(function(t){ return ids.indexOf(t.laneId)===-1; });
       state.lanes = state.lanes.filter(function(l){ return ids.indexOf(l.id)===-1; });
+      fitRangeToAllTasks();
       if (ids.indexOf(selectedLaneId)>=0) selectedLaneId = state.lanes[0] ? state.lanes[0].id : null;
       markDirty('Autosaved'); render(); return;
     }
@@ -1689,6 +1688,7 @@
     pushUndo();
     var removeSet = selectedTaskIds.slice();
     state.tasks = state.tasks.filter(function(x){ return removeSet.indexOf(x.id) === -1; });
+    fitRangeToAllTasks();
     clearTaskSelection();
     markDirty('Autosaved');
     render();
@@ -1973,15 +1973,59 @@
       .finally(function(){ $.save.disabled = false; });
   };
 
-  function ensureRangeCovers(s,e){ if (s < state.start) state.start = s; if (e > state.end) state.end = e; }
+  function ensureRangeCovers(s, e){
+    if (s == null && e == null){
+      fitRangeToAllTasks();
+      return;
+    }
+    fitRangeToAllTasks({ start: s, end: e });
+  }
 
-  // Fit current date range exactly to all tasks (min start, max end)
-  function fitRangeToAllTasks(){
-    if (!state || !Array.isArray(state.tasks) || state.tasks.length === 0) return;
-    var sMin = state.tasks.reduce(function(a,t){ return (a < t.start) ? a : t.start; }, state.tasks[0].start);
-    var eMax = state.tasks.reduce(function(a,t){ return (a > t.end) ? a : t.end; }, state.tasks[0].end);
-    state.start = sMin;
-    state.end = eMax;
+  // Fit current date 범위 to include all tasks (and optional extra ranges)
+  function fitRangeToAllTasks(extraRange){
+    var extras = [];
+    if (extraRange != null){
+      if (Array.isArray(extraRange)) extras = extraRange;
+      else extras = [extraRange];
+    }
+
+    var ranges = [];
+    if (state && Array.isArray(state.tasks)){
+      state.tasks.forEach(function(t){
+        if (!t) return;
+        var sVal = t.start || t.end;
+        var eVal = t.end || t.start;
+        if (!sVal && !eVal) return;
+        if (!sVal) sVal = eVal;
+        if (!eVal) eVal = sVal;
+        if (sVal > eVal){ var swap = sVal; sVal = eVal; eVal = swap; }
+        ranges.push({ start:sVal, end:eVal });
+      });
+    }
+
+    extras.forEach(function(r){
+      if (!r) return;
+      var sVal = r.start || r.end;
+      var eVal = r.end || r.start;
+      if (!sVal && !eVal) return;
+      if (!sVal) sVal = eVal;
+      if (!eVal) eVal = sVal;
+      if (sVal > eVal){ var swap = sVal; sVal = eVal; eVal = swap; }
+      ranges.push({ start:sVal, end:eVal });
+    });
+
+    if (!ranges.length) return;
+
+    var min = ranges[0].start;
+    var max = ranges[0].end;
+    for (var i=1;i<ranges.length;i++){
+      var r = ranges[i];
+      if (r.start < min) min = r.start;
+      if (r.end > max) max = r.end;
+    }
+
+    state.start = min;
+    state.end = max;
   }
 
   // Fit current date range to the currently visible canvas viewport
@@ -2595,10 +2639,6 @@
       var x = tl.dateToX(fmt(today()));
       $.canvasWrap.scrollLeft = Math.max(0, x - ($.canvasWrap.clientWidth * 0.4));
       requestSync();
-
-      // Finally, make the date range match the currently visible viewport
-      fitRangeToViewport();
-      render();
     }).catch(function(e){
       console.error(e);
       $.status.innerHTML = 'Load error <span class="rm-danger">(open console)</span>';
