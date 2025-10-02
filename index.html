@@ -880,6 +880,8 @@
   /* ========= Layout (Inclusive) ========= */
   var TRACK = { pad:8, gap:6, height:28 };
   var MILESTONE = { size:18 };
+  var DRAG_ACTIVATE_DELAY = 180; // hold duration before drag engages automatically (ms)
+  var DRAG_ACTIVATE_DISTANCE = 8; // px movement to activate drag immediately
   function isTaskMilestone(task, lane){
     if (!task) return false;
     if (task.milestone !== undefined) return !!task.milestone;
@@ -1255,10 +1257,16 @@
 
         // Tooltip is handled via delegated event listeners on the canvas
 
+        t.__rmSkipClick = false;
+
         t.addEventListener('click', function(e){
           e.stopPropagation();
           selectLaneNoRender(lane.id);
-          if (e.shiftKey){
+          var skip = this.__rmSkipClick;
+          this.__rmSkipClick = false;
+          if (skip) return;
+          var multiKey = e.shiftKey || e.metaKey || e.ctrlKey;
+          if (multiKey){
             selectTaskNoRender(task.id, { append:true, toggle:true });
           } else {
             selectTaskNoRender(task.id);
@@ -1696,34 +1704,75 @@
   }
 
   function copySelectedTask(){
-    var targetId = selectedTaskId || (selectedTaskIds.length ? selectedTaskIds[selectedTaskIds.length - 1] : null);
-    if (!targetId) return false;
-    var cTask = state.tasks.find(function(x){ return x.id === targetId; });
-    if (!cTask) return false;
-    window.__rm_clipboard_task = JSON.parse(JSON.stringify(cTask));
+    var orderedIds = selectedTaskIds.slice();
+    if (!orderedIds.length && selectedTaskId){ orderedIds.push(selectedTaskId); }
+    var seen = {};
+    var originals = [];
+    for (var i=0;i<orderedIds.length;i++){
+      var id = orderedIds[i];
+      if (!id || seen[id]) continue;
+      seen[id] = true;
+      var orig = state.tasks.find(function(x){ return x.id === id; });
+      if (!orig) continue;
+      originals.push(orig);
+    }
+    if (!originals.length) return false;
+
+    var stored = originals.map(function(task){ return JSON.parse(JSON.stringify(task)); });
+    window.__rm_clipboard_tasks = stored;
+
+    var primaryId = selectedTaskId || (stored.length ? stored[stored.length - 1].id : null);
+    var primaryTask = null;
+    if (primaryId){
+      for (var j=0;j<stored.length;j++){
+        if (stored[j].id === primaryId){ primaryTask = stored[j]; break; }
+      }
+    }
+    if (!primaryTask){ primaryTask = stored[stored.length - 1]; }
+    window.__rm_clipboard_task = JSON.parse(JSON.stringify(primaryTask));
     return true;
+  }
+
+  function clipboardSnapshot(){
+    if (Array.isArray(window.__rm_clipboard_tasks) && window.__rm_clipboard_tasks.length){
+      return window.__rm_clipboard_tasks.map(function(task){ return JSON.parse(JSON.stringify(task)); });
+    }
+    if (window.__rm_clipboard_task){
+      return [JSON.parse(JSON.stringify(window.__rm_clipboard_task))];
+    }
+    return [];
+  }
+
+  function clipboardHasData(){
+    return (Array.isArray(window.__rm_clipboard_tasks) && window.__rm_clipboard_tasks.length > 0) || !!window.__rm_clipboard_task;
   }
 
   function pasteTaskIntoLane(laneId){
     if (!laneId) return false;
-    var clip = window.__rm_clipboard_task;
-    if (!clip) return false;
+    var bundle = clipboardSnapshot();
+    if (!bundle.length) return false;
+
     pushUndo();
-    var newTask = {
-      id: makeId(),
-      laneId: laneId,
-      title: clip.title,
-      start: clip.start,
-      end: clip.end,
-      color: clip.color || null,
-      milestone: !!clip.milestone
-    };
-    if (clip.owner){ newTask.owner = clip.owner; }
-    state.tasks.push(newTask);
+    var newIds = [];
+    for (var i=0;i<bundle.length;i++){
+      var clip = bundle[i];
+      if (!clip) continue;
+      var newTask = JSON.parse(JSON.stringify(clip));
+      newTask.id = makeId();
+      newTask.laneId = laneId;
+      if (!newTask.title){ newTask.title = 'New Task'; }
+      if (!newTask.start){ newTask.start = fmt(today()); }
+      if (!newTask.end){ newTask.end = newTask.start; }
+      state.tasks.push(newTask);
+      newIds.push(newTask.id);
+      ensureRangeCovers(newTask.start, newTask.end);
+    }
+
+    if (!newIds.length){ undoStack.pop && undoStack.pop(); return false; }
+
     selectedLaneId = laneId;
-    selectedTaskId = newTask.id;
-    selectedTaskIds = [newTask.id];
-    ensureRangeCovers(newTask.start, newTask.end);
+    selectedTaskId = newIds[newIds.length - 1];
+    selectedTaskIds = newIds.slice();
     markDirty('Autosaved');
     render();
     return true;
@@ -1781,7 +1830,7 @@
 
     var hasLane = !!laneId;
     var hasTask = !!taskId;
-    var hasClipboard = !!window.__rm_clipboard_task;
+    var hasClipboard = clipboardHasData();
     var actions = [
       { action:'task-add', label:'태스크 추가', enabled:hasLane },
       { action:'task-edit', label:'태스크 편집', enabled:hasTask },
@@ -2061,6 +2110,20 @@
       mode = withinLeft ? 'left' : (withinRight ? 'right' : 'move');
       startX = e.clientX;
 
+      var dragPrimed = false;
+      var dragPrimeTimer = null;
+      function cancelPrimeTimer(){ if (dragPrimeTimer){ clearTimeout(dragPrimeTimer); dragPrimeTimer = null; } }
+      function ensureDragPrimedBy(clientX){
+        if (dragPrimed) return true;
+        if (Math.abs(clientX - startX) >= DRAG_ACTIVATE_DISTANCE){
+          dragPrimed = true;
+          cancelPrimeTimer();
+          return true;
+        }
+        return false;
+      }
+      dragPrimeTimer = setTimeout(function(){ dragPrimed = true; dragPrimeTimer = null; }, DRAG_ACTIVATE_DELAY);
+
       multiMeta = null;
       selectionIdsAtDrag = [];
       lastShiftDays = 0;
@@ -2081,10 +2144,14 @@
       }
       baseSpanPx = baseRight - baseLeft;
 
+      var alreadySelected = selectedTaskIds.indexOf(id) >= 0;
+      var multiKey = e.shiftKey || e.metaKey || e.ctrlKey;
+      node.__rmSkipClick = false;
       if (lane){ selectLaneNoRender(lane.id); }
-      if (e.shiftKey){
+      if (multiKey){
         selectTaskNoRender(id, { append:true });
-      } else if (selectedTaskIds.indexOf(id) === -1){
+        if (!alreadySelected){ node.__rmSkipClick = true; }
+      } else if (!alreadySelected){
         selectTaskNoRender(id);
       } else {
         ensurePrimaryTaskSelection(id);
@@ -2134,6 +2201,9 @@
       function onMove(ev){
         if (!mode) return;
         var dx = ev.clientX - startX;
+        if (!dragPrimed && !ensureDragPrimedBy(ev.clientX)) return;
+        dragPrimed = true;
+        cancelPrimeTimer();
         var newLeft = baseLeft;
         var newRight = baseRight;
         var shiftDays = 0;
@@ -2213,6 +2283,15 @@
 
       function onUp(ev){
         if (!mode) return;
+        cancelPrimeTimer();
+        if (!dragPrimed){
+          undoStack.pop && undoStack.pop();
+          mode = null;
+          window.removeEventListener('mousemove', onMove);
+          window.removeEventListener('mouseup', onUp);
+          dragActive = false; hideTip();
+          return;
+        }
         var t = state.tasks.find(function(t){return t.id===id;});
         if (t){
           var newLeft  = (node.__left!=null)? node.__left : parseInt(node.style.left,10);
@@ -2297,6 +2376,20 @@
       mode = withinLeft ? 'left' : (withinRight ? 'right' : 'move');
       startX = t0.clientX;
 
+      var dragPrimed = false;
+      var dragPrimeTimer = null;
+      function cancelPrimeTimer(){ if (dragPrimeTimer){ clearTimeout(dragPrimeTimer); dragPrimeTimer = null; } }
+      function ensureDragPrimedBy(clientX){
+        if (dragPrimed) return true;
+        if (Math.abs(clientX - startX) >= DRAG_ACTIVATE_DISTANCE){
+          dragPrimed = true;
+          cancelPrimeTimer();
+          return true;
+        }
+        return false;
+      }
+      dragPrimeTimer = setTimeout(function(){ dragPrimed = true; dragPrimeTimer = null; }, DRAG_ACTIVATE_DELAY);
+
       var t = state.tasks.find(function(tt){return tt.id===id;});
       var lane = t ? state.lanes.find(function(l){ return l.id===t.laneId; }) : null;
       isMilestoneDrag = isTaskMilestone(t, lane);
@@ -2321,7 +2414,11 @@
       function onMoveTouch(ev){
         if (!mode) return;
         if (!ev.touches || !ev.touches[0]) return;
-        var dx = ev.touches[0].clientX - startX;
+        var touchX = ev.touches[0].clientX;
+        var dx = touchX - startX;
+        if (!dragPrimed && !ensureDragPrimedBy(touchX)) return;
+        dragPrimed = true;
+        cancelPrimeTimer();
         var newLeft = baseLeft, newRight = baseRight;
         if (state.scale === 'month'){
           if (mode==='move'){
@@ -2380,6 +2477,15 @@
       function onUpTouch(ev){
         var cy = (ev.changedTouches && ev.changedTouches[0]) ? ev.changedTouches[0].clientY : 0;
         if (!mode) return;
+        cancelPrimeTimer();
+        if (!dragPrimed){
+          undoStack.pop && undoStack.pop();
+          mode = null;
+          dragActive = false; hideTip();
+          window.removeEventListener('touchmove', onMoveTouch);
+          window.removeEventListener('touchend', onUpTouch);
+          return;
+        }
         var tt = state.tasks.find(function(x){return x.id===id;});
         if (tt){
           var newLeft  = (node.__left!=null)? node.__left : parseInt(node.style.left,10);
